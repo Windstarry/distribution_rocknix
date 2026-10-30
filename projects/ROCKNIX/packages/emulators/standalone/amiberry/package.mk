@@ -23,7 +23,10 @@ pre_configure_target() {
 
   cd ${PKG_BUILD}
   export SYSROOT_PREFIX=${SYSROOT_PREFIX}
-  AMIBERRY_PLATFORM="PLATFORM=${DEVICE}"
+  case ${DEVICE} in
+    A311D) AMIBERRY_PLATFORM="PLATFORM=S922X" ;; # G12B: reuse upstream S922X platform flags
+    *)     AMIBERRY_PLATFORM="PLATFORM=${DEVICE}" ;;
+  esac
 
   sed -i "s|AS     = as|AS     \?= as|" Makefile
   PKG_MAKE_OPTS_TARGET+="${AMIBERRY_PLATFORM} all SDL_CONFIG=${SYSROOT_PREFIX}/usr/bin/sdl2-config"

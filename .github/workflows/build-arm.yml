@@ -86,7 +86,9 @@ jobs:
           tar -cf ccache-arm-${{ inputs.DEVICE }}.tar ./build.ROCKNIX-${{ inputs.DEVICE }}.arm/.ccache  
 
       - name: save ccache
-        if: ${{ secrets.GH_PAT != '' }}
+        if: env.HAS_GH_PAT == 'true'
+        env:
+          HAS_GH_PAT: ${{ secrets.GH_PAT != '' }}
         uses: ncipollo/release-action@v1
         with:
           tag: ccache
