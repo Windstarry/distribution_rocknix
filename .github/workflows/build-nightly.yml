@@ -68,6 +68,11 @@ on:
         required: false
         default: false
         type: boolean
+      A311D:
+        description: 'A311D'
+        required: false
+        default: false
+        type: boolean
       S905:
         description: 'S905'
         required: false
@@ -108,7 +113,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
-          ALL_DEVICES=(RK3326 RK3326S RK3399 RK3566 RK3588 S922X H700 SDM845 SM8250 SM8550 SM8650 S905 RK356X)
+          ALL_DEVICES=(RK3326 RK3326S RK3399 RK3566 RK3588 S922X H700 SDM845 SM8250 SM8550 SM8650 S905 RK356X A311D)
           declare -A VALID_DEVICES=()
           declare -A SEEN_DEVICES=()
           for D in "${ALL_DEVICES[@]}"; do
@@ -129,6 +134,7 @@ jobs:
             ["SM8650"]="${{ inputs.SM8650 }}"
             ["S905"]="${{ inputs.S905 }}"
             ["RK356X"]="${{ inputs.RK356X }}"
+            ["A311D"]="${{ inputs.A311D }}"
           )
 
           SELECTED_MATRIX=""
