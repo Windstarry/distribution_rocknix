@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2024-present ROCKNIX (https://github.com/ROCKNIX)
+
+SRCDIR="${INSTALL}/usr/share/bootloader"
+DSTDIR="${RELEASE_DIR}/3rdparty/bootloader"
+
+mkdir -p "${DSTDIR}/device_trees"
+cp -a "${SRCDIR}"/* "${DSTDIR}/" 2>/dev/null || true
+if [ -d "${SRCDIR}/device_trees" ]; then
+  cp -a "${SRCDIR}/device_trees/"*.dtb "${DSTDIR}/device_trees/"
+fi
+
+# default dtb.img: CAINIAO CNIoT-CORE / LEMO CORE A311D (Amlogic A311D, G12B)
+DEFAULT_DTB=""
+for dtb in meson-g12b-a311d-cainiao-cniot-core.dtb; do
+  if [ -f "${DSTDIR}/device_trees/${dtb}" ]; then
+    DEFAULT_DTB="${dtb}"
+    break
+  fi
+done
+
+if [ -n "${DEFAULT_DTB}" ]; then
+  cp -v "${DSTDIR}/device_trees/${DEFAULT_DTB}" "${DSTDIR}/dtb.img"
+fi

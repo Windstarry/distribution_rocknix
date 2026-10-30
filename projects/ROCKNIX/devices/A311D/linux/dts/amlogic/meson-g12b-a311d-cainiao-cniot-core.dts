@@ -1,0 +1,203 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2025 ROCKNIX (https://github.com/ROCKNIX)
+ *
+ * Amlogic A311D (G12B) "CAINIAO CNIoT-CORE" / LEMO CORE A311D.
+ *
+ * P1 bring-up set only: memory, CPU supplies/OPP, USB (root medium), HDMI,
+ * debug UART, power/recovery keys and the dual GPU nodes (mali / mali_vulkan).
+ * Ethernet, SDIO RTL8822CS, audio, fan and LED follow in P2.
+ *
+ * GPU stack: "mali_vulkan" (arm,mali-midgard) is the vendor DDK (mali_kbase)
+ * node used by the default libmali stack; the panfrost node "mali" is kept
+ * but disabled. meson-g12b-a311d-cainiao-cniot-core-panfrost.dts flips them.
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/clock/g12a-clkc.h>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/gpio/meson-g12a-gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/reset/amlogic,meson-g12a-reset.h>
+
+#include "meson-g12b-a311d.dtsi"
+
+/ {
+	compatible = "cainiao,cniot-core", "amlogic,a311d", "amlogic,g12b";
+	model = "CAINIAO CNIoT-CORE";
+
+	aliases {
+		serial0 = &uart_AO;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	memory@0 {
+		device_type = "memory";
+		/* 2000MB, the size the vendor boot chain maps for this board */
+		reg = <0x0 0x0 0x0 0x77359400>;
+	};
+
+	main_12v: regulator-main-12v {
+		compatible = "regulator-fixed";
+		regulator-name = "12V";
+		regulator-min-microvolt = <12000000>;
+		regulator-max-microvolt = <12000000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	vddcpu_a: regulator-vddcpu-a {
+		compatible = "pwm-regulator";
+		regulator-name = "VDDCPU_A";
+		regulator-min-microvolt = <690000>;
+		regulator-max-microvolt = <1050000>;
+		pwm-supply = <&main_12v>;
+		pwms = <&pwm_ab 0 1250 0>;
+		pwm-dutycycle-range = <100 0>;
+		regulator-boot-on;
+		regulator-always-on;
+	};
+
+	vddcpu_b: regulator-vddcpu-b {
+		compatible = "pwm-regulator";
+		regulator-name = "VDDCPU_B";
+		regulator-min-microvolt = <690000>;
+		regulator-max-microvolt = <1050000>;
+		pwm-supply = <&main_12v>;
+		pwms = <&pwm_AO_cd 1 1250 0>;
+		pwm-dutycycle-range = <100 0>;
+		regulator-boot-on;
+		regulator-always-on;
+	};
+
+	/* USB hub power enables of the dock (kept on during P1) */
+	usb_hub_power: regulator-usb-hub-power {
+		compatible = "regulator-fixed";
+		regulator-name = "USB_HUB_POWER";
+		gpios = <&gpio GPIOH_8 GPIO_ACTIVE_HIGH>,
+			<&gpio_ao GPIOAO_6 GPIO_ACTIVE_HIGH>,
+			<&gpio GPIOA_14 GPIO_ACTIVE_HIGH>;
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		regulator-always-on;
+		regulator-boot-on;
+		enable-active-high;
+	};
+
+	keys {
+		compatible = "gpio-keys-polled";
+		poll-interval = <100>;
+
+		power-button {
+			label = "Power";
+			linux,code = <KEY_POWER>;
+			gpios = <&gpio_ao GPIOAO_3 GPIO_ACTIVE_LOW>;
+			linux,wakeup;
+		};
+	};
+
+	adc-keys {
+		compatible = "adc-keys";
+		io-channels = <&saradc 2>;
+		io-channel-names = "buttons";
+		keyup-threshold-microvolt = <1710000>;
+
+		recovery-button {
+			label = "recovery";
+			linux,code = <KEY_POWER>;
+			press-threshold-microvolt = <17000>;
+		};
+	};
+
+	/* Vendor GPU DDK node (meson platform): default libmali stack */
+	mali_vulkan: gpu_mali_vulkan@ffe40000 {
+		compatible = "arm,mali-midgard";
+		reg = <0x0 0xffe40000 0x0 0x40000>,
+			<0x0 0xffd01000 0x0 0x1000>,
+			<0x0 0xff800000 0x0 0x1000>,
+			<0x0 0xff63c000 0x0 0x1000>;
+		interrupt-parent = <&gic>;
+		interrupts = <GIC_SPI 160 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 161 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 162 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "GPU", "MMU", "JOB";
+		clocks = <&clkc CLKID_MALI>;
+		clock-names = "clk_mali";
+		resets = <&reset RESET_DVALIN_CAPB3>, <&reset RESET_DVALIN>;
+		operating-points-v2 = <&gpu_opp_table>;
+		#cooling-cells = <2>;
+		system-coherency = <0>;
+		power_policy = "always_on";
+		status = "okay";
+	};
+};
+
+/* Panfrost node: kept disabled, enabled by the *-panfrost dtb variant */
+&mali {
+	status = "disabled";
+};
+
+&cpu0 {
+	cpu-supply = <&vddcpu_b>;
+};
+
+&cpu1 {
+	cpu-supply = <&vddcpu_b>;
+};
+
+&cpu100 {
+	cpu-supply = <&vddcpu_a>;
+};
+
+&cpu101 {
+	cpu-supply = <&vddcpu_a>;
+};
+
+&cpu102 {
+	cpu-supply = <&vddcpu_a>;
+};
+
+&cpu103 {
+	cpu-supply = <&vddcpu_a>;
+};
+
+&pwm_ab {
+	pinctrl-0 = <&pwm_a_e_pins>;
+	pinctrl-names = "default";
+	clocks = <&xtal>;
+	clock-names = "clkin0";
+	status = "okay";
+};
+
+&pwm_AO_cd {
+	pinctrl-0 = <&pwm_ao_d_e_pins>;
+	pinctrl-names = "default";
+	clocks = <&xtal>;
+	clock-names = "clkin1";
+	status = "okay";
+};
+
+&saradc {
+	status = "okay";
+};
+
+&hdmi_tx {
+	status = "okay";
+	pinctrl-0 = <&hdmitx_hpd_pins>, <&hdmitx_ddc_pins>;
+	pinctrl-names = "default", "hdmi_i2c";
+};
+
+&usb {
+	status = "okay";
+	dr_mode = "host";
+};
+
+&uart_AO {
+	status = "okay";
+};

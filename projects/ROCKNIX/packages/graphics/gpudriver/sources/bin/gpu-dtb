@@ -1,0 +1,45 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2024-present ROCKNIX (https://github.com/ROCKNIX)
+#
+# Chain-boot (aml_autoscript/cfgload) equivalent of dtb_overlay for GPU stack
+# selection: writes the "gpu_dtb" key of /flash/config.ini, which cfgload uses
+# instead of dtb.img on the next boot. Takes effect after a reboot.
+
+BOOT_ROOT="${BOOT_ROOT:-/flash}"
+CONFIG_INI="${BOOT_ROOT}/config.ini"
+
+case "$1" in
+  libmali)
+    DTB="dtb.img"
+    ;;
+  panfrost)
+    DTB="dtb-panfrost.img"
+    ;;
+  *)
+    echo "Usage: $(basename $0) [libmali|panfrost]" >&2
+    exit 1
+    ;;
+esac
+
+if [ ! -f "${CONFIG_INI}" ]; then
+  echo "gpu-dtb: ${CONFIG_INI} not found, keeping the current dtb" >&2
+  exit 1
+fi
+
+if [ ! -f "${BOOT_ROOT}/${DTB}" ]; then
+  echo "gpu-dtb: warning: ${BOOT_ROOT}/${DTB} is missing" >&2
+fi
+
+mount -o remount,rw "${BOOT_ROOT}" 2>/dev/null
+
+if grep -q '^gpu_dtb=' "${CONFIG_INI}"; then
+  sed -i "s|^gpu_dtb=.*|gpu_dtb=${DTB}|" "${CONFIG_INI}"
+else
+  printf 'gpu_dtb=%s\n' "${DTB}" >> "${CONFIG_INI}"
+fi
+
+sync
+mount -o remount,ro "${BOOT_ROOT}" 2>/dev/null
+
+echo "gpu-dtb: ${DTB} selected, reboot to apply"
