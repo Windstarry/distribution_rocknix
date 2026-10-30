@@ -183,6 +183,7 @@ jobs:
             | split -b 1900m - ccache-aarch64-${{ inputs.DEVICE }}-emu-standalone.tar.part-
 
       - name: Save ccache
+        if: ${{ secrets.GH_PAT != '' }}
         uses: ncipollo/release-action@v1
         with:
           tag: ccache

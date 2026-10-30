@@ -109,6 +109,7 @@ jobs:
           tar --remove-files -cf ccache-aarch64-${{ inputs.DEVICE }}-qt6.tar ./build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/.ccache 
 
       - name: Save ccache
+        if: ${{ secrets.GH_PAT != '' }}
         uses: ncipollo/release-action@v1
         with:
           tag: ccache
