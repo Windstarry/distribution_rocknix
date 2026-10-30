@@ -213,6 +213,9 @@ jobs:
   build-docker:
     if: needs.set-envs.outputs.SHOULD_BUILD == 'yes' && (github.event_name != 'schedule' || (github.repository == 'AveyondFly/distribution_rocknix' && github.ref_name == 'next'))
     name: Docker
+    permissions:
+      contents: read
+      packages: write
     needs: set-envs
     uses: ./.github/workflows/build-docker-image.yml
     with:
@@ -271,6 +274,10 @@ jobs:
   build-devices:
     if: needs.set-envs.outputs.SHOULD_BUILD == 'yes' && ((github.event_name != 'schedule') || (github.repository == 'AveyondFly/distribution_rocknix' && github.ref_name == 'next'))
     name: Build Devices
+    permissions:
+      actions: write
+      contents: read
+      packages: write
     needs:
       - set-envs
       - build-docker
