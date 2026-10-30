@@ -209,6 +209,9 @@
     <file>sc2_s905x4_x96_x4_4g</file>
     <file>sc2_s905x4_x96_x4_4g_1gbit</file>
   </S905>
+  <A311D mkimage_options="aml_boot" dtb_prefix="amlogic">
+    <file>meson-g12b-a311d-cainiao-cniot-core</file>
+  </A311D>
   <S922X mkimage_options="dtb,extlinux,gou_extras,uboot" fdt_type="fdtdir" dtb_prefix="amlogic">
     <file>meson-g12b-odroid-go-ultra</file>
     <file>meson-g12b-powkiddy-rgb10-max-3-pro</file>

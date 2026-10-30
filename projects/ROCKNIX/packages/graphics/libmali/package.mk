@@ -23,6 +23,10 @@ case "${DEVICE}" in
     DRIVER_VERSION="r51p0"
     PKG_DEPENDS_TARGET+=" vulkan-wsi-layer vulkan-tools"
   ;;
+  A311D)
+    DRIVER_VERSION="r51p0"
+    PKG_DEPENDS_TARGET+=" vulkan-wsi-layer vulkan-tools"
+  ;;
   S905)
     DRIVER_VERSION="g24p0"
   ;;
@@ -110,7 +114,7 @@ post_makeinstall_target() {
       curl -Lo ${INSTALL}/usr/lib/libmali-${MALI_FAMILY}-${DRIVER_VERSION}-x11-gbm.so ${PKG_SITE}/raw/master/lib/aarch64-linux-gnu/libmali-${MALI_FAMILY}-${DRIVER_VERSION}-x11-gbm.so
   fi
   # Vulkan libraries are installed outside the bind-mounted GLES directory.
-  if [[ "${DEVICE}" =~ S922X|RK3326|RK3566|RK356X ]] && [ "${ARCH}" = "aarch64" ]; then
+  if [[ "${DEVICE}" =~ S922X|A311D|RK3326|RK3566|RK356X ]] && [ "${ARCH}" = "aarch64" ]; then
     mv "${INSTALL}"/usr/lib/mali/libMaliVulkan.* "${INSTALL}"/usr/lib/
   fi
   if [[ "${DEVICE}" =~ RK3566|RK356X ]] && [ "${ARCH}" = "arm" ]; then

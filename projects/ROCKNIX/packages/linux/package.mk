@@ -66,7 +66,7 @@ case ${DEVICE} in
         PKG_VERSION="6.19.5"
         PKG_URL="https://www.kernel.org/pub/linux/kernel/v${PKG_VERSION/.*/}.x/${PKG_NAME}-${PKG_VERSION}.tar.xz"
         ;;
-      S922X|RK3399|RK3566)
+      S922X|RK3399|RK3566|A311D)
         PKG_VERSION="6.18.21"
         PKG_URL="https://www.kernel.org/pub/linux/kernel/v${PKG_VERSION/.*/}.x/${PKG_NAME}-${PKG_VERSION}.tar.xz"
         ;;
@@ -112,6 +112,8 @@ elif [ "${DEVICE}" = "SM8250" -o "${DEVICE}" = "SDM845" -o "${DEVICE}" = "H700" 
 elif [ "${DEVICE}" = "S905" ]; then
   PKG_DEPENDS_TARGET+=" zstd:host"
   PKG_DEPENDS_UNPACK+=" bl30"
+elif [ "${DEVICE}" = "A311D" ]; then
+  PKG_DEPENDS_TARGET+=" zstd:host"
 fi
 
 fetch_common_drivers() {
@@ -239,6 +241,20 @@ post_patch() {
             printf '%s\n' "${dtb_entry}" >> "${rockchip_dts_makefile}"
         done
       fi
+
+      # A311D board DTS files also live in the distribution tree.
+      if [ "${DEVICE}" = "A311D" ]; then
+        local amlogic_dts_makefile="${PKG_BUILD}/arch/arm64/boot/dts/amlogic/Makefile"
+        local dts_file dtb_name dtb_entry
+
+        for dts_file in "${DTS_SOURCE_DIR}"/amlogic/*.dts; do
+          [ -f "${dts_file}" ] || continue
+          dtb_name="$(basename "${dts_file%.dts}").dtb"
+          dtb_entry="dtb-\$(CONFIG_ARCH_MESON) += ${dtb_name}"
+          grep -qxF "${dtb_entry}" "${amlogic_dts_makefile}" || \
+            printf '%s\n' "${dtb_entry}" >> "${amlogic_dts_makefile}"
+        done
+      fi
     fi
   fi
 }
@@ -331,7 +347,7 @@ pre_make_target() {
   cp ${PKG_KERNEL_CFG_FILE} ${PKG_BUILD}/.config
 
   # Amlogic Android boot images use an external ramdisk, matching CoreELEC.
-  if [ "${DEVICE}" = "S905" ]; then
+  if [ "${DEVICE}" = "S905" -o "${DEVICE}" = "A311D" ]; then
     ${PKG_BUILD}/scripts/config --set-str CONFIG_INITRAMFS_SOURCE ""
   else
     ${PKG_BUILD}/scripts/config --set-str CONFIG_INITRAMFS_SOURCE "$(kernel_initramfs_confs) ${BUILD}/initramfs"
@@ -505,7 +521,7 @@ make_target() {
     kernel_make -C ${PKG_BUILD}/bsp/modules/gpu GPU_BUILD_TYPE=release
   fi
 
-  if [ "${BUILD_ANDROID_BOOTIMG}" = "yes" -a "${DEVICE}" = "S905" ]; then
+  if [ "${BUILD_ANDROID_BOOTIMG}" = "yes" ] && [ "${DEVICE}" = "S905" -o "${DEVICE}" = "A311D" ]; then
     mkdir -p ${BUILD}/image
     initramfs_add_root_links "${BUILD}/initramfs"
     (cd ${BUILD}/initramfs && find . | cpio -H newc -o --quiet -R 0:0 > ${BUILD}/image/initramfs.cpio)
@@ -559,7 +575,7 @@ makeinstall_target() {
   mkdir -p ${INSTALL}/.image
   cp -p System.map .config Module.symvers ${INSTALL}/.image/
 
-  if [ "${BUILD_ANDROID_BOOTIMG}" = "yes" -a "${DEVICE}" = "S905" ]; then
+  if [ "${BUILD_ANDROID_BOOTIMG}" = "yes" ] && [ "${DEVICE}" = "S905" -o "${DEVICE}" = "A311D" ]; then
     cp -p arch/${TARGET_KERNEL_ARCH}/boot/${KERNEL_TARGET} ${INSTALL}/.image/
   elif [ "${BUILD_ANDROID_BOOTIMG}" = "yes" ]; then
     INITRAMFS_DIR="${BUILD}/initramfs"
@@ -618,6 +634,11 @@ makeinstall_target() {
     if [ "${DEVICE}" = "S905" ]; then
       mkdir -p ${INSTALL}/usr/share/bootloader/device_trees
       for dtb in common_drivers/arch/${TARGET_KERNEL_ARCH}/boot/dts/amlogic/*.dtb; do
+        [ -f ${dtb} ] && cp -v ${dtb} ${INSTALL}/usr/share/bootloader/device_trees
+      done
+    elif [ "${DEVICE}" = "A311D" ]; then
+      mkdir -p ${INSTALL}/usr/share/bootloader/device_trees
+      for dtb in arch/${TARGET_KERNEL_ARCH}/boot/dts/amlogic/meson-g12b-a311d-cainiao-cniot-core*.dtb; do
         [ -f ${dtb} ] && cp -v ${dtb} ${INSTALL}/usr/share/bootloader/device_trees
       done
     else

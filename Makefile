@@ -44,6 +44,10 @@ S922X:
 	PROJECT=ROCKNIX DEVICE=S922X ARCH=arm ./scripts/build_distro
 	PROJECT=ROCKNIX DEVICE=S922X ARCH=aarch64 ./scripts/build_distro
 
+A311D:
+	unset DEVICE_ROOT
+	PROJECT=ROCKNIX DEVICE=A311D ARCH=aarch64 ./scripts/build_distro
+
 RK3566:
 	unset DEVICE_ROOT
 	DEVICE_ROOT=RK3566 PROJECT=ROCKNIX DEVICE=RK3566 ARCH=arm ./scripts/build_distro

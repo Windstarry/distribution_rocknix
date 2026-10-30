@@ -40,7 +40,7 @@ make_target() {
   # Rockchip devices use the devicetree backend which properly coordinates
   # with kernel power domain drivers during runtime PM suspend/resume cycles.
   case ${DEVICE} in
-    S922X)
+    S922X|A311D)
       MALI_PLATFORM="meson"
       ;;
     *)
