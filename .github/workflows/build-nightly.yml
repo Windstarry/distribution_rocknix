@@ -222,7 +222,7 @@ jobs:
       OWNER_LC: ${{ needs.set-envs.outputs.OWNER_LC }}
 
   rk3326-dtbselect-windows:
-    if: needs.set-envs.outputs.SHOULD_BUILD == 'yes' && ((github.event_name != 'schedule') || (github.repository == 'AveyondFly/distribution_rocknix' && github.ref_name == 'next'))
+    if: needs.set-envs.outputs.SHOULD_BUILD == 'yes' && ((github.event_name != 'schedule') || (github.repository == 'AveyondFly/distribution_rocknix' && github.ref_name == 'next')) && contains(needs.set-envs.outputs.matrix, 'RK3326')
     needs:
       - set-envs
       - build-docker
@@ -233,7 +233,7 @@ jobs:
     secrets: inherit
 
   rk3326s-dtbselect-windows:
-    if: needs.set-envs.outputs.SHOULD_BUILD == 'yes' && ((github.event_name != 'schedule') || (github.repository == 'AveyondFly/distribution_rocknix' && github.ref_name == 'next'))
+    if: needs.set-envs.outputs.SHOULD_BUILD == 'yes' && ((github.event_name != 'schedule') || (github.repository == 'AveyondFly/distribution_rocknix' && github.ref_name == 'next')) && contains(needs.set-envs.outputs.matrix, 'RK3326S')
     needs:
       - set-envs
       - build-docker
@@ -243,7 +243,7 @@ jobs:
     secrets: inherit
 
   rk3566-dtbselect-windows:
-    if: needs.set-envs.outputs.SHOULD_BUILD == 'yes' && ((github.event_name != 'schedule') || (github.repository == 'AveyondFly/distribution_rocknix' && github.ref_name == 'next'))
+    if: needs.set-envs.outputs.SHOULD_BUILD == 'yes' && ((github.event_name != 'schedule') || (github.repository == 'AveyondFly/distribution_rocknix' && github.ref_name == 'next')) && contains(needs.set-envs.outputs.matrix, 'RK3566')
     needs:
       - set-envs
       - build-docker
@@ -254,7 +254,7 @@ jobs:
     secrets: inherit
 
   rk356x-dtbselect-windows:
-    if: needs.set-envs.outputs.SHOULD_BUILD == 'yes' && ((github.event_name != 'schedule') || (github.repository == 'AveyondFly/distribution_rocknix' && github.ref_name == 'next'))
+    if: needs.set-envs.outputs.SHOULD_BUILD == 'yes' && ((github.event_name != 'schedule') || (github.repository == 'AveyondFly/distribution_rocknix' && github.ref_name == 'next')) && contains(needs.set-envs.outputs.matrix, 'RK356X')
     needs:
       - set-envs
       - build-docker
@@ -281,10 +281,6 @@ jobs:
     needs:
       - set-envs
       - build-docker
-      - rk3326-dtbselect-windows
-      - rk3326s-dtbselect-windows
-      - rk3566-dtbselect-windows
-      - rk356x-dtbselect-windows
       - user-manual-pdfs
     strategy:
       fail-fast: false
