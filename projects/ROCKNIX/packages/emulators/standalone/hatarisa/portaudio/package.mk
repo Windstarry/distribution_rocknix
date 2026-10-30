@@ -6,7 +6,11 @@ PKG_VERSION="64d1bf913433d7a2835526b80a93487d5038cb8e"
 PKG_SHA256="c33e48217a844cca3b66ab88571b90beefb8fcb6967177951d4dc283587bf834"
 PKG_LICENSE="GPL"
 PKG_SITE="https://portaudio.com"
-PKG_URL="https://github.com/zhang-ray/portaudio/archive/${PKG_VERSION}.tar.gz"
+# Upstream github.com/zhang-ray/portaudio (the fork this pinned commit came
+# from) has been deleted, so the original archive URL now returns 404.
+# Use the distro sources mirror copy instead: the tarball is byte-identical to
+# the original (sha256 c33e482...bf834 unchanged), so PKG_SHA256 still matches.
+PKG_URL="https://github.com/AveyondFly/distribution-sources/releases/download/sources/portaudio-${PKG_VERSION}.tar.gz"
 PKG_DEPENDS_TARGET="toolchain alsa-lib"
 PKG_LONGDESC="PortAudio is a free, cross-platform, open-source, audio I/O library."
 
