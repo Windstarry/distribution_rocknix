@@ -23,10 +23,12 @@ pre_configure_target() {
 
   cd ${PKG_BUILD}
   export SYSROOT_PREFIX=${SYSROOT_PREFIX}
-  case ${DEVICE} in
-    A311D) AMIBERRY_PLATFORM="PLATFORM=S922X" ;; # G12B: reuse upstream S922X platform flags
-    *)     AMIBERRY_PLATFORM="PLATFORM=${DEVICE}" ;;
-  esac
+  # patches/01-platform.patch replaces @DEVICE@ with ${DEVICE} (scripts/unpack),
+  # so the platform branch added to amiberry's Makefile is named after the
+  # device itself (e.g. "A311D"). Passing an upstream platform name here
+  # (e.g. S922X) never matches that branch and make aborts with
+  # "Unknown platform:<name>", because upstream has no such branch either.
+  AMIBERRY_PLATFORM="PLATFORM=${DEVICE}"
 
   sed -i "s|AS     = as|AS     \?= as|" Makefile
   PKG_MAKE_OPTS_TARGET+="${AMIBERRY_PLATFORM} all SDL_CONFIG=${SYSROOT_PREFIX}/usr/bin/sdl2-config"
