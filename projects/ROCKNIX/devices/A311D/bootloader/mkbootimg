@@ -1,15 +1,16 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2018-present Team CoreELEC (https://coreelec.org)
 # Adapted for ROCKNIX A311D chain-boot (stock Amlogic U-Boot, Android boot image)
+#
+# The stock 2015.01 Amlogic U-Boot on this box cannot handle a
+# zstd-compressed ramdisk in the Android boot image (black screen at
+# bootm). Keep the ramdisk as an uncompressed newc cpio, matching
+# EmuELEC/CoreELEC which boots fine on this hardware.
 
-INITRAMFS="${1}.cpio"
-RAMDISK=${BUILD}/image/${INITRAMFS}
+RAMDISK=${BUILD}/image/${1}.cpio
 
 echo
-echo "Compressing ${INITRAMFS} with zstd"
-stat -c "  %s bytes  %n" ${RAMDISK}
-zstd -q -f ${RAMDISK}
-RAMDISK=${RAMDISK}.zst
+echo "Using uncompressed ramdisk ${1}.cpio (stock U-Boot compatible)"
 stat -c "  %s bytes  %n" ${RAMDISK}
 
 LDFLAGS="" mkbootimg --kernel arch/${TARGET_KERNEL_ARCH}/boot/${KERNEL_TARGET} --ramdisk ${RAMDISK} \
