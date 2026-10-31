@@ -427,6 +427,21 @@
 	status = "okay";
 };
 
+/* pwm_d on GPIOA_4: the "pwm_d_a" group is registered by the 6.18
+ * pinctrl driver (pinctrl-meson-g12a.c) but is NOT declared in mainline
+ * meson-g12-common.dtsi (only x3/x6/z are), so declare the pin group
+ * here. The armbian meson64-6.18 reference relies on an equivalent
+ * vendor patch. */
+&periphs_pinctrl {
+	pwm_d_a_pins: pwm-d-a {
+		mux {
+			groups = "pwm_d_a";
+			function = "pwm_d";
+			bias-disable;
+		};
+	};
+};
+
 /* Fan PWM (pwm_d) */
 &pwm_cd {
 	pinctrl-0 = <&pwm_d_a_pins>;
