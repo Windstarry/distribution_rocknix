@@ -404,6 +404,13 @@
 	};
 };
 
+/* NPU (Vivante NNA @ 0xff100000): node is in meson-g12-common.dtsi,
+ * power domain PWRC_G12A_NNA_ID added by meson-g12b.dtsi, driver is
+ * etnaviv (CONFIG_DRM_ETNAVIV). */
+&npu {
+	status = "okay";
+};
+
 &pwm_ab {
 	pinctrl-0 = <&pwm_a_e_pins>;
 	pinctrl-names = "default";
