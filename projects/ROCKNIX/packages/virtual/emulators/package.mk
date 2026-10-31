@@ -95,6 +95,15 @@ case "${DEVICE}" in
     LIBRETRO_CORES+=" beetle-psx-lr beetle-saturn-lr bsnes-lr bsnes-hd-lr dolphin-lr flycast2021-lr geolith-lr pcsx_rearmed-lr uae4arm kronos-lr"
     PKG_RETROARCH+=" retropie-shaders"
     ;;
+  A311D)
+    # Needed by the aarch64 install step: pcsx_rearmed-lr's makeinstall_target
+    # copies a 32-bit pcsx_rearmed32_libretro.so from the arm compat tree
+    # (build.*.arm/install_pkg) whenever ENABLE_32BIT=true, which is the
+    # distro default. Without an entry here EMUS_32BIT stays empty, the arm
+    # tree never builds the core, and the image build fails with
+    # "cp: cannot stat .../install_pkg/pcsx_rearmed-lr-*/...".
+    [ "${ENABLE_32BIT}" == "true" ] && EMUS_32BIT="box86 desmume-lr gpsp-lr gpsp_ezode-lr pcsx_rearmed-lr"
+    ;;
   S922X)
     [ "${ENABLE_32BIT}" == "true" ] && EMUS_32BIT="box86 pcsx_rearmed-lr"
     PKG_EMUS+=" aethersx2-sa azahar-sa box64 dolphin-sa drastic-sa drastic_adv-sa duckstation-sa melonds-sa portmaster scummvmsa yabasanshiro-sa"
