@@ -7,20 +7,33 @@
  * P1 bring-up set: memory, CPU supplies/OPP, USB (root medium), HDMI,
  * debug UART, power/recovery keys and the dual GPU nodes (mali / mali_vulkan).
  *
- * P2 additions (this revision, adapted from the retro98boy/armbian-build
+ * P2 additions (adapted from the retro98boy/armbian-build
  * meson64-6.18 board file): RGMII Ethernet (RTL8211F on ext_mdio), eMMC,
  * SDIO WiFi RTL8822CS + BT (uart_A), axg sound card (TDM + tohdmitx/
  * toacodec + ht6872 speaker amplifier), pwm fan with tachometer,
  * WS2812 LEDs via spicc1/spidev, HDMI connector + CEC.
+ *
+ * P3 alignment (2026-11-09, against the 54,984 B DTB that actually boots
+ * this board, i.e. the batocera/S922X-BOX reference chain):
+ *  - CPU OPP tables + CPU clocks + clock-latency on all six cores
+ *    (label names verified in 6.18 meson-g12b-a311d.dtsi).
+ *  - hdmi_tx pinctrl-names reduced to "default": the old extra
+ *    "hdmi_i2c" state had no matching pinctrl-1.
+ *  - one fixed-regulator per USB enable GPIO, each wired to its PHY.
+ *    fixed-regulator.yaml allows exactly ONE enable gpio (maxItems: 1);
+ *    the previous merged usb_hub_power listed three gpios, so only the
+ *    first was ever driven.
+ *  - adc-keys poll-interval restored.
  *
  * Board-specific policies kept from P1 (differ from the armbian/batocera
  * reference):
  *  - GPU stack: "mali_vulkan" (arm,mali-midgard) is the vendor DDK
  *    (mali_kbase) node used by the default libmali stack; the panfrost
  *    node "mali" is kept but disabled. meson-g12b-a311d-cainiao-cniot-core-
- *    panfrost.dts flips them.
- *  - USB hub power enables of the dock are merged into usb_hub_power
- *    (GPIOH_8 + GPIOAO_6 + GPIOA_14 held high = side contacts selected).
+ *    panfrost.dts flips them. The live DTB instead leaves panfrost at its
+ *    dtsi default (okay) and has no vendor DDK node.
+ *  - main_12v / vddao_1v8 / vsys_3v3 supply naming (the reference calls
+ *    the 12V rail dc_in); electrically equivalent.
  *  - adc-keys recovery button maps to KEY_POWER @ 17000uV.
  */
 
@@ -99,18 +112,49 @@
 		regulator-always-on;
 	};
 
-	/* USB hub power enables of the dock (kept on during P1) */
-	usb_hub_power: regulator-usb-hub-power {
+	/*
+	 * USB hub / port power enables of the dock.
+	 * fixed-regulator.yaml (6.18) allows exactly ONE enable GPIO
+	 * ("gpio" or "gpios", maxItems: 1). The old merged usb_hub_power node
+	 * listed three gpios in one property, so only GPIOH_8 was ever driven.
+	 * Split into one regulator per GPIO and wire each to its PHY, matching
+	 * the DTB that actually boots this board.
+	 */
+	amp_power: regulator-amp-power {
 		compatible = "regulator-fixed";
-		regulator-name = "USB_HUB_POWER";
-		gpios = <&gpio GPIOH_8 GPIO_ACTIVE_HIGH>,
-			<&gpio_ao GPIOAO_6 GPIO_ACTIVE_HIGH>,
-			<&gpio GPIOA_14 GPIO_ACTIVE_HIGH>;
+		regulator-name = "amp_power";
+		gpio = <&gpio GPIOH_8 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
 		regulator-min-microvolt = <5000000>;
 		regulator-max-microvolt = <5000000>;
 		regulator-always-on;
 		regulator-boot-on;
+		vin-supply = <&main_12v>;
+	};
+
+	usb_pwr: regulator-usb-pwr {
+		compatible = "regulator-fixed";
+		regulator-name = "usb_pwr";
+		gpio = <&gpio_ao GPIOAO_6 GPIO_ACTIVE_HIGH>;
 		enable-active-high;
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		regulator-always-on;
+		regulator-boot-on;
+		vin-supply = <&main_12v>;
+	};
+
+	/* GPIOA_14 selects the side USB contacts (active low in the live DTB) */
+	usb_switch: regulator-usb-switch {
+		compatible = "regulator-fixed";
+		regulator-name = "usb_switch";
+		gpio = <&gpio GPIOA_14 GPIO_ACTIVE_LOW>;
+		enable-active-low;
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		regulator-always-on;
+		regulator-boot-on;
+		vin-supply = <&main_12v>;
 	};
 
 	vddao_1v8: regulator-vddao-1v8 {
@@ -140,7 +184,7 @@
 		regulator-min-microvolt = <12000000>;
 		regulator-max-microvolt = <12000000>;
 		enable-active-high;
-		gpios = <&gpio GPIOH_7 GPIO_ACTIVE_HIGH>;
+		gpio = <&gpio GPIOH_7 GPIO_ACTIVE_HIGH>;
 		regulator-always-on;
 		regulator-boot-on;
 		vin-supply = <&main_12v>;
@@ -163,6 +207,7 @@
 		io-channels = <&saradc 2>;
 		io-channel-names = "buttons";
 		keyup-threshold-microvolt = <1710000>;
+		poll-interval = <100>;
 
 		recovery-button {
 			label = "recovery";
@@ -335,28 +380,53 @@
 	status = "disabled";
 };
 
+/*
+ * CPU frequency scaling. cpu_opp_table_0 (A53 little cluster) and
+ * cpub_opp_table_1 (A73 big cluster) are defined in 6.18
+ * meson-g12b-a311d.dtsi; the live DTB references both. Without these
+ * properties cpufreq has no OPP table and the cores stay at the boot
+ * frequency.
+ */
 &cpu0 {
 	cpu-supply = <&vddcpu_b>;
+	operating-points-v2 = <&cpu_opp_table_0>;
+	clocks = <&clkc CLKID_CPU_CLK>;
+	clock-latency = <50000>;
 };
 
 &cpu1 {
 	cpu-supply = <&vddcpu_b>;
+	operating-points-v2 = <&cpu_opp_table_0>;
+	clocks = <&clkc CLKID_CPU_CLK>;
+	clock-latency = <50000>;
 };
 
 &cpu100 {
 	cpu-supply = <&vddcpu_a>;
+	operating-points-v2 = <&cpub_opp_table_1>;
+	clocks = <&clkc CLKID_CPUB_CLK>;
+	clock-latency = <50000>;
 };
 
 &cpu101 {
 	cpu-supply = <&vddcpu_a>;
+	operating-points-v2 = <&cpub_opp_table_1>;
+	clocks = <&clkc CLKID_CPUB_CLK>;
+	clock-latency = <50000>;
 };
 
 &cpu102 {
 	cpu-supply = <&vddcpu_a>;
+	operating-points-v2 = <&cpub_opp_table_1>;
+	clocks = <&clkc CLKID_CPUB_CLK>;
+	clock-latency = <50000>;
 };
 
 &cpu103 {
 	cpu-supply = <&vddcpu_a>;
+	operating-points-v2 = <&cpub_opp_table_1>;
+	clocks = <&clkc CLKID_CPUB_CLK>;
+	clock-latency = <50000>;
 };
 
 /*
@@ -535,8 +605,10 @@
 
 &hdmi_tx {
 	status = "okay";
+	/* The live DTB uses a single "default" state holding BOTH pin groups.
+	 * A second "hdmi_i2c" name without a matching pinctrl-1 is invalid. */
 	pinctrl-0 = <&hdmitx_hpd_pins>, <&hdmitx_ddc_pins>;
-	pinctrl-names = "default", "hdmi_i2c";
+	pinctrl-names = "default";
 };
 
 &hdmi_tx_tmds_port {
@@ -621,6 +693,21 @@
 	status = "okay";
 	pinctrl-0 = <&uart_ao_a_pins>;
 	pinctrl-names = "default";
+};
+
+/* USB PHY supplies, one per enable regulator (matches the live DTB).
+ * Labels usb2_phy0 / usb2_phy1 / usb3_pcie_phy come from 6.18
+ * meson-g12-common.dtsi. */
+&usb2_phy0 {
+	phy-supply = <&amp_power>;
+};
+
+&usb2_phy1 {
+	phy-supply = <&usb_switch>;
+};
+
+&usb3_pcie_phy {
+	phy-supply = <&usb_pwr>;
 };
 
 &usb {

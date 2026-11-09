@@ -22,6 +22,7 @@ A311D / bootsafe 启动固件  实机检查清单 (Runbook)
            tools/a311d_fat_markers.py         (FAT LFN 首启标记; 默认只读,
                                               写入必须 --write --yes)
            tools/a311d_games_partition_check.py (首启三分区/exFAT 只读验收)
+           tools/a311d_dts_check.py           (DTS 静态校验 + DTC stub 生成)
            均仅用 Python 3 标准库
 记录方式 : 每项写 PASS / FAIL / 实测值; 任一 FAIL 立即停止后续上电动作
 
@@ -456,6 +457,70 @@ A311D / bootsafe 启动固件  实机检查清单 (Runbook)
            需改用约 12G 的标记或把脚本改成相对大小。
 
 --------------------------------------------------------------------------------
+5.13 "fe.dai-Link-8: ASoC: no backend DAIs enabled for fe.dai-Link-0, possibly"
+     (2026-11-09 实机: 该提示已越过, 属非致命告警, 不要当卡死处理)
+--------------------------------------------------------------------------------
+内核出处 : sound/soc/soc-pcm.c dpcm_fe_dai_open(): 若 fe->dpcm[stream]
+           .be_clients 为空 -> dev_err_once("ASoC: no backend DAIs enabled
+           for %s, possibly missing ALSA mixer-based routing or UCM
+           profile") -> 返回 -EINVAL, 仅本次 PCM open 失败。
+           上游 commit f957172b (2023) 专为 PipeWire 登录刷 96 行而降级为
+           dev_err_once, 明确不是致命错误。
+触发条件 : 用户态 (ES / PipeWire / ALSA 服务) 在 DAPM mixer 路由或 UCM
+           profile 尚未配置时提前打开 FE PCM。能报出 fe.dai-link-* 设备名
+           说明 axg-sound-card 已成功 probe 并创建了 FE PCM。
+DTB 取证 : 实机 DTB 的 /sound 子树 14 节点, compatible
+           amlogic,axg-sound-card, 7 个 dai-link (0..6) 全 okay,
+           audio-routing / audio-widgets / audio-aux-devs / clocks /
+           assigned-clock-* 齐全; 与仓库 DTS 声明的属性集完全一致。
+           -> 不是 DTB 缺音频节点, 无需改 DTS。
+实机状态 : 22:4x 复核 192.168.31.7:22/445 连续两轮 OPEN
+           (SSH-2.0-OpenSSH_9.8), bringup_probe 判定 BOOTED。
+           用户确认 "这个错误已过"。
+LAN 注意 : 192.168.31.69:22/445 也在线且同为 OpenSSH_9.8, 但用户确认
+           **不是本机盒子**, 不要把它当设备 IP; 判定只认 192.168.31.7。
+处置     : 忽略; 若需消噪, 进系统后配置 ALSA UCM/mixer 路由, 不要在
+           启动阶段断电重试或改 DTB。
+
+--------------------------------------------------------------------------------
+5.14 以实机 DTB 为准完善远程仓库 A311D 板级 DTS (2026-11-09)
+--------------------------------------------------------------------------------
+对比对象 : 实机 dtb_bootsafe_markers.dtb (54,984 B / 580 节点 / md5
+           0fee9ffd, batocera 系) vs 10-31 CI 产物 dtb_CI_AURKNIX.dtb
+           (74,382 B / 538 节点 / md5 b192650a, 早于 P2/NPU 提交) vs
+           仓库 meson-g12b-a311d-cainiao-cniot-core.dts (内核 6.18.21)。
+报告     : E:\A311d\dts_compare\dtb_live_vs_repo_20261109.txt
+已改 7 项: ① 6 个 CPU 补 operating-points-v2 / clocks / clock-latency
+             (A53 -> cpu_opp_table_0 + CLKID_CPU_CLK=187;
+              A73 -> cpub_opp_table_1 + CLKID_CPUB_CLK=224;
+              与实机 DTB 的 <0x2 0xbb> / <0x2 0xe0> 字节级吻合)
+           ② hdmi_tx pinctrl-names 去掉无对应 pinctrl-1 的 "hdmi_i2c"
+           ③ 新增 &usb2_phy0/&usb2_phy1/&usb3_pcie_phy 的 phy-supply
+           ④ usb_hub_power 拆为 amp_power / usb_pwr / usb_switch 三个
+              regulator (fixed-regulator.yaml maxItems:1, 原来一个节点
+              写 3 个 gpios 实际只驱动 GPIOH_8)
+           ⑤ vdd_amp 的 gpios 改 gpio 与实机一致
+           ⑥ adc-keys 补 poll-interval = <100>
+           ⑦ 顶部注释改 P3 对齐说明
+有意保留 : GPU 策略 (仓库 &mali disabled + mali_vulkan vendor DDK;
+           实机是 panfrost 默认 okay), main_12v 命名, KEY_POWER@17000uV,
+           /sound 音频图 (已一致)。
+源码核对 : 6.18 meson-g12b-a311d.dtsi 有 cpu_opp_table_0 /
+           cpub_opp_table_1; 6.18 meson-g12-common.dtsi 有 usb2_phy0 /
+           usb2_phy1 / usb3_pcie_phy; 6.18 g12a-clkc.h 有
+           CLKID_CPU_CLK=187 / CLKID_CPUB_CLK=224;
+           6.18 fixed-regulator.yaml: gpio 与 gpios 均 maxItems: 1。
+验证     : python tools/a311d_dts_check.py -> PASS 0 FAIL
+           (94/94 花括号, pinctrl 一致, regulator 单 gpio);
+           Docker ubuntu:22.04 内 DTC 1.6.1 + cpp:
+           stub.dts -> out.dtb (10,987 B) -> out.dts 往返成功
+           (仅 stub 空节点缺 #gpio-cells 等预期 warning)。
+           stub 生成时须排除 VCC-supply / AVDD-supply 这类全大写属性名
+           前缀, 否则被当成宏展开导致 DTC syntax error。
+后续     : 推送后由用户手动触发 Action 重新编译 A311D; 新 DTB 出来后
+           用 a311d_dtb_compare.py --diff 与实机 DTB 再比一次。
+
+--------------------------------------------------------------------------------
 附录: 本轮验证记录 (2026-11-09)
 --------------------------------------------------------------------------------
 静态验收 : TC-IMG-01..13 全 PASS (verify_report.json), 退出码 0
@@ -566,5 +631,20 @@ DTB 排查 : A (CI 74,382 B / b192650a / 538 节点 / 无 hdmi-connector) 与
            报 3 RISK) -> 上机前必须按 5.10 现场补 --mode D --yes,
            否则会再次卡在 meson DRM 提示。
 源码修复 : fs-resize 改 mkpart primary ntfs (MBR 0x07), 仅对下次编译生效;
-           runbook 新增 5.12。本地提交, 未推送。
+           runbook 新增 5.12。
+后续验证 : 本轮上电已越过 5.10 的 meson DRM 提示, 说明 video= 修复已
+           生效; U 盘回 PC 后再用 --check --drive F: 复核并更新此条。
+--------------------------------------------------------------------------------
+5.13/5.14 复核 (2026-11-09 22:4x, 盒子仍在上电)
+--------------------------------------------------------------------------------
+启动阶段 : 出现 fe.dai-Link-8 ASoC "no backend DAIs enabled" 后系统继续
+           运行, 用户确认 "这个错误已过" -> 非致命 (5.13)。
+网络     : 192.168.31.7:22/445 连续两轮 OPEN, SSH banner
+           SSH-2.0-OpenSSH_9.8, bringup_probe = BOOTED;
+           192.168.31.69 同为 OpenSSH_9.8 但用户确认不是本机, 排除。
+DTB 对齐 : 完成 7 项源码修改, DTC 1.6.1 容器实编 + 往返通过,
+           静态检查 PASS 0 FAIL; 详见 5.14 与
+           E:\A311d\dts_compare\dtb_live_vs_repo_20261109.txt。
+未完成   : SSH 内容验证、HDMI 画面、P2 外设实机、report-stats 现场处置
+           (5.8)、新 DTB 编译产物与实机 DTB 的二次 diff。
 ================================================================================
