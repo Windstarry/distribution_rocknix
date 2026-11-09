@@ -51,3 +51,13 @@ documentation/user_man/prebuilt-pdf/
 /.env
 /.es_cache
 /.config
+
+# locally stored firmware images (multi-GB binaries, never commit)
+/imgs/
+
+# WorkBuddy project memory / daily logs
+/.workbuddy/
+
+# python bytecode
+__pycache__/
+*.pyc
