@@ -1,17 +1,26 @@
 ================================================================================
 A311D / bootsafe 启动固件  实机检查清单 (Runbook)
-版本: 2026-11-09 (修订 2)   时间口径: 北京时间
+版本: 2026-11-09 (修订 3)   时间口径: 北京时间
 ================================================================================
 
 对象镜像 : E:\A311d\AURKNIX-image-A311D-20261031\
-           AURKNIX-A311D.aarch64-20261109-bootsafe-markers.img
-           sha256 c9a659480cd7bdadc06e9a8f79634632c1db7eee09c86e78900ee88bc021ff4f
-           (旧 bootsafe.img 缺两个首启标记, 已废弃, 不要再刷)
+           AURKNIX-A311D.aarch64-20261109-bootsafe-edidmode.img   <- 本轮推荐
+           sha256 efd716c4f6680ba16fad46e0a8beda6b611332d5962276845cc2f9f00093af9b
+           在 markers 版基础上把 3 处 video=HDMI-A-1:1920x1080@60 改成
+           video=HDMI-A-1:D (避开 meson DRM 的 user-defined mode 拒绝);
+           与 markers 版仅 4 个 512B 扇区不同
+           markers 版 sha256 c9a65948...ff4f (含两个首启标记, 但带强制 video=,
+           新验收 TC-IMG-16 会判 FAIL, 保留作回滚)
+           旧 bootsafe.img 缺两个首启标记, 已废弃, 不要再刷
 板卡     : CAINIAO CNIoT-CORE, Amlogic A311D (G12B), aarch64, stock U-Boot 2015.01
 介质     : Rufus 刷写的 U 盘; P1 FAT32 卷标 ROCKNIX (2048 MiB @ LBA 32768),
            P2 ext4 卷标 STORAGE (32 MiB), 镜像无第三分区
-工具     : E:\A311d\tools\a311d_firmware_verify.py
-           E:\A311d\tools\a311d_bringup_probe.py      (均仅用 Python 3 标准库)
+工具     : tools/a311d_firmware_verify.py      (23 项镜像/U 盘验收)
+           tools/a311d_video_mode.py           (video= 强制模式检查/修复/回滚)
+           tools/a311d_dtb_compare.py          (DTB 来源对比/提取/隔离替换)
+           tools/a311d_bringup_probe.py       (LAN 端口状态机)
+           tools/a311d_fat_markers.py         (FAT LFN 首启标记)
+           均仅用 Python 3 标准库
 记录方式 : 每项写 PASS / FAIL / 实测值; 任一 FAIL 立即停止后续上电动作
 
 已验证的实机事实 (2026-11-09, 用户确认 + 端口实测):
@@ -29,15 +38,18 @@ A311D / bootsafe 启动固件  实机检查清单 (Runbook)
 --------------------------------------------------------------------------------
 1.1 镜像静态验收
   命令: python E:\A311d\tools\a311d_firmware_verify.py --json E:\A311d\tools\verify_report.json
-        (工具默认镜像已改为修复版 markers.img, 不要手动指回旧 bootsafe.img)
-  通过: TC-IMG-01..13 + TC-IMG-15 全 PASS, FAIL=0, 退出码 0
+        (工具默认镜像已改为 edidmode.img; 验收时 --image 必须指向实际刷写的
+         那个镜像, 刷 markers 版就显式 --image markers.img)
+  通过: TC-IMG-01..13 + TC-IMG-15 + TC-IMG-16 全 PASS, FAIL=0, 退出码 0
         (TC-IMG-14 sha256 与 TC-USB-07 raw MBR 允许 SKIP)
   失败: 任一 FAIL -> 禁止刷盘。重点看 TC-IMG-06: cmdline 为空或 ramdisk_size != 0
-        说明手里是 CI 黑屏版镜像; TC-IMG-12/15 FAIL 说明是缺标记的旧 bootsafe
-  本次实测 (2026-11-09 20:3x, F 盘联检):
+        说明手里是 CI 黑屏版镜像; TC-IMG-12/15 FAIL 说明是缺标记的旧 bootsafe;
+        TC-IMG-16 FAIL 说明仍带 video=<WxH@Hz> 强制模式 -> 5.10
+  本次实测 (2026-11-09 20:3x, F 盘联检, 当时基准为 markers 版):
         PASS 21 / FAIL 0 / SKIP 2, RESULT: PASS - safe to proceed to power-on checks
-        报告 usb_report_F_20261109.json;
-        镜像 sha256 实算 = c9a65948...ff4f, 与 .sha256 文件一致
+        报告 usb_report_F_20261109.json; 镜像 sha256 实算 = c9a65948...ff4f,
+        与 .sha256 文件一致; 但上机后暴露 5.10 的 DRM 问题,
+        因此该版现被 TC-IMG-16 判 FAIL, 必须升级到 edidmode
         TC-USB-07 SKIP 因无管理员权限, 已用 Get-Partition 复核物理布局 (见 1.3)
 
 1.2 Rufus 刷写参数
@@ -52,14 +64,18 @@ A311D / bootsafe 启动固件  实机检查清单 (Runbook)
           --image <修复版 markers.img> --reference <S922X 参考镜像> \
           --aurknix <CI 原镜像> --json E:\A311d\...\usb_report_F_20261109.json
         (盘符用实际值; 可用 PowerShell Get-Volume 找卷标 ROCKNIX 的盘)
-  通过: TC-USB-01..06 + TC-USB-08 全 PASS; 卷标 ROCKNIX;
-        6 个文件 md5+size 与镜像一致; 两个首启标记都在
+  通过: TC-USB-01..06 + TC-USB-08 + TC-USB-09 全 PASS; 卷标 ROCKNIX;
+        6 个文件 md5+size 与镜像一致; 两个首启标记都在; 无强制 video 模式
   失败: TC-USB-06 出现 cfgload_env / device_trees / config.ini / kernel.img.md5
         -> 刷的是 CI 旧引导链 (黑屏版), 回到 1.2 重刷;
         TC-USB-08 FAIL -> 缺 resize_storage_10G / ms_unsupported, 用
-        python tools/a311d_fat_markers.py --drive F: 补 (仅未扩容盘有效)
+        python tools/a311d_fat_markers.py --drive F: 补 (仅未扩容盘有效);
+        TC-USB-09 FAIL -> 盘上仍是 1920x1080@60 强制模式, 用
+        python tools/a311d_video_mode.py --drive F: --mode D --yes 现场修 (5.10)
   工具修订 (2026-11-09): TC-USB-06 曾把 ms_unsupported 误列为 CI 残留,
-        与 TC-IMG-15 自相矛盾; 已移出黑名单, 并新增 TC-USB-08 正向校验标记
+        与 TC-IMG-15 自相矛盾; 已移出黑名单, 并新增 TC-USB-08 正向校验标记、
+        TC-USB-09 校验强制 video 模式; TC-IMG-10 改为对 video= token 归一化后
+        比较, 使打过 5.10 补丁的引导链仍能 PASS
   可选: 加 --raw-disk N (管理员权限) 校验物理盘 MBR 的 P1 LBA/type
   本次 F 盘实测 (无管理员, 用 Get-Partition 复核):
         Disk 2, 32 GiB / MBR, P1 FAT32 2 GiB @ offset 16 MiB, 活动 = True
@@ -310,6 +326,94 @@ A311D / bootsafe 启动固件  实机检查清单 (Runbook)
   失败: 仍 2 分区 -> 查 /flash/resize_storage_10G 是否随镜像刷入、
         fs-resize.log 是否走 resizepart 2 10G 分支
 
+5.10 卡在 "meson drm ff900000.vpu drm user-defined mode not support" (本次实际)
+  现象: 2026-11-09 21:30 用户报告进系统后停在该提示 10 分钟不动。
+        同期实测 192.168.31.7:22/445 连续稳定 LISTEN (BOOTED),
+        但免密 SSH 握手 6 s 超时 -> 内核与网络栈没死, 是显示/图形栈
+        (或等待显示就绪的首启脚本) 卡住, 不是硬件死机, 断电重启安全。
+  根因: 参考镜像的显示参数被 100% 继承, 三处硬编码同一个强制模式
+          /flash/cfgload 的 setenv bootargs
+          /flash/kernel.img   Android header cmdline (offset 64, 512 B)
+          /flash/kernel2.img  Android header cmdline (fallback boot 路径)
+        均为 video=HDMI-A-1:1920x1080@60
+        (来源 S922X/bootloader/update.sh:56; plan R9 也曾建议该写法)
+        -> drm_kms_helper 按 CVT 合成一个 DRM_MODE_TYPE_USERDEF 时序;
+           mainline 6.18.49 内核里存在字面量
+           "User-defined mode not supported: \"%s\": %d ...",
+           meson DRM 的 mode_valid 拒绝 USERDEF (VENC/ENCP 只能按固定
+           时序表或 EDID 派生模式编程) -> KMS 无有效 mode, 显示初始化停住。
+        佐证: KERNEL (26,822,664 B, ARM64 Image 头 1f 20 03 d5) 内可搜到
+           "Linux version 6.18.49" 与该报错字符串; 该参数在 S922X 盒子
+           + 对应显示器上可用, 换 A311D 菜鸟板 + 不同 EDID 环境即触发。
+  判定: 通过 = 出图且 22/445 稳定; 失败 = 仍停该提示 -> 按下述处置
+  处置: ① 现场修 (推荐, 不重刷、不丢已扩容的 GAMES 分区):
+           断电 -> U 盘插回 PC -> 先按 1.3/3.3 检查三分区 ->
+           python tools/a311d_video_mode.py --drive F: --mode D --yes
+           (自动写 .bak; 同步改 cfgload + kernel.img + kernel2.img 三处)
+           -> 插回上电。video=HDMI-A-1:D 只启用 connector, 不创建
+           USERDEF 模式, 是 ROCKNIX getedid / update-bootloader-edid-amlogic
+           自己的写法。
+        ② 重刷 (干净但会重新首启扩容):
+           Rufus DD 刷 AURKNIX-A311D.aarch64-20261109-bootsafe-edidmode.img
+           sha256 efd716c4f6680ba16fad46e0a8beda6b611332d5962276845cc2f9f00093af9b
+        ③ 回滚: python tools/a311d_video_mode.py --drive F: --restore --yes
+        ④ 若仍无画面: 先 --mode none 彻底删 video=; 再考虑 EDID 注入
+           drm.edid_firmware (需 edid.cpio, 见
+           packages/sysutils/busybox/scripts/update-bootloader-edid-amlogic)
+  验证: python tools/a311d_video_mode.py --check --drive F:  -> 0 forced
+        python tools/a311d_firmware_verify.py --drive F: --image <edidmode>
+          -> TC-IMG-16 / TC-USB-09 均 PASS
+        上机后: cat /sys/class/drm/card0-HDMI-A-1/modes
+                dmesg | grep -iE "drm|hdmi|edid"
+  注意: 改过 kernel.img/kernel2.img 后其 md5 与原始镜像不同, 这是有意的
+        /flash 补丁; 验收时 --image 必须指向 edidmode 版才不会误报。
+
+5.11 "编译出的 AURKNIX DTB" 与 "实际使用 DTB" 不一致 (用户点名排查)
+  结论: 不一致属实, 但方向相反 —— 实际用的那份 HDMI 图更完整,
+        本条卡死直接原因仍是 5.10 的 cmdline, 保留现 DTB 先修 5.10。
+  三份 DTB 实测 (2026-11-09 21:4x, FDT v17, 工具 a311d_dtb_compare.py):
+    A CI 编译产物, 取自 AURKNIX-A311D.aarch64-20261031.img 的 DTB IMG
+      74,382 B  md5 b192650aaa1ca7da7d03186106da7eda  538 节点
+      model CAINIAO CNIoT-CORE; compatible cainiao,cniot-core /
+      amlogic,a311d / amlogic,g12b (mainline 风格)
+      有 /soc/vpu@ff900000 (amlogic,meson-g12a-vpu) 与
+         /soc/bus@ff600000/hdmi-tx@0 (amlogic,meson-g12a-dw-hdmi)
+      但 **无 /hdmi-connector、无 hdmi-tx port@1/endpoint**
+        -> HDMI 图不完整, dw-hdmi 桥接拿不到 DDC/EDID
+      npu / ethernet / cec@280 / gpu 全 disabled (10-31 构建, 早于
+      P2 节点与 NPU 启用提交, 不是当前仓库 DTS 的最新产物)
+    B bootsafe 实际使用 (= S922X-BOX 参考镜像的 DTB IMG)
+      54,984 B  md5 0fee9ffd2a2f3cb4a891b71176e3ee6a  580 节点
+      同 model/compatible; 有 /hdmi-connector + port@1/endpoint
+        -> HDMI 图完整, EDID 可达
+      npu / ethernet / cec@280 全 okay; 另含 pwm-fan / sdio-pwrseq /
+      wifi / sound / regulators 等 P2 外设; 与本地
+      E:\A311d\batocera\dtb.img (53,719 B / 576 节点) 同系
+    C EE/EmuELEC vendor DTB (E:\A311d\dtb菜鸟物流主机.img,
+      与 g12b_a311d_cainiao_cniot_core.dtb 同 md5)
+      74,839 B  md5 1b285a567963bf56a5e5ffeccd797ef4  481 节点
+      amhdmitx / cvbsout / auge_sound / aocec, compatible "amlogic, g12b"
+      -> vendor 4.9 风格, 与 mainline 6.x meson DRM 内核不兼容;
+         之前把它换进 CI 镜像仍黑屏已实证, 不要再用
+  差异要点: A 独有 7 节点 (gpu_mali_vulkan / keys / regulators 等),
+    B 独有 49 节点 (hdmi-connector 及其 endpoint、pwm-fan、sound
+    dai-links、wifi、spidev、sdio-pwrseq 等); 显示相关属性差异还包括
+    vpu port@1/port@2 与 hdmi-tx port@0 的 remote-endpoint phandle 不同。
+  隔离测试 (仅在 5.10 修好后仍卡时才做, 一次只换一个变量):
+    python tools/a311d_dtb_compare.py --list <A.dtb>
+    python tools/a311d_dtb_compare.py --diff <A.dtb> <B.dtb>
+    python tools/a311d_dtb_compare.py --extract --image <img> --out <dtb>
+    python tools/a311d_dtb_compare.py --replace --drive F: --dtb <A.dtb> --yes
+      自动备份 F:\dtb.img -> F:\dtb.img.bak; 回滚 copy /Y .bak dtb.img
+    判定: 换 A 后 dmesg 出现 dw-hdmi/EDID 失败或 modes 为空 -> 证实 A 的
+      HDMI 图不完整, 维持 B; 若换 A 反而出图 -> 说明 B 与当前内核不配套,
+      需从当前仓库 DTS 重新编译一份「完整 connector 图 + P2/NPU」的 DTB。
+    注意: 想验证最新 P2/NPU 必须重新构建, 现有 A 是 10-31 旧产物。
+  配套边界: bootsafe 的 kernel.img (14,215,168 B) 与 dtb.img (54,984 B)
+    都来自参考镜像 (相互配套); SYSTEM 才是 AURKNIX CI rootfs;
+    KERNEL (26,822,664 B, 6.18.49) / kernel2.img 是 CI 内核,
+    cfgload 第一条走 kernel.img, 失败才 fallback kernel2.img。
+
 --------------------------------------------------------------------------------
 附录: 本轮验证记录 (2026-11-09)
 --------------------------------------------------------------------------------
@@ -370,4 +474,37 @@ F 盘上电前复核 (2026-11-09 20:20~20:35, 用户: "F 盘已刷写好, 准备
            若盒子 DHCP 换 IP, 先从路由器/arp 表确认再改 --device-ip
 未完成   : 3.1 SSH 内容验证 (需启动完成后一次口令交互)、HDMI 画面状态、
            3.2/3.3 挂载与扩容实机值、P2 外设实机 (本轮 DTB 未含)
+--------------------------------------------------------------------------------
+上机结果复核 (2026-11-09 21:30~21:5x, 用户: 卡在 meson drm 提示 10 分钟)
+--------------------------------------------------------------------------------
+网络     : 21:30 / 21:37 两次探测均 BOOTED, 192.168.31.7:22/445 持续在线;
+           免密 SSH 握手 6 s 超时 (端口 LISTEN 但服务未真正就绪)
+           -> 判定显示/图形栈卡住, 非内核崩溃, 断电重启安全
+报错定位 : mainline 6.18.49 KERNEL 内含字面量
+           "User-defined mode not supported: \"%s\": %d ...";
+           cfgload + kernel.img + kernel2.img 三处
+           video=HDMI-A-1:1920x1080@60 -> USERDEF 模式被 meson DRM 拒
+DTB 排查 : A (CI 74,382 B / b192650a / 538 节点 / 无 hdmi-connector) 与
+           B (实机 54,984 B / 0fee9ffd / 580 节点 / HDMI 图完整) 字节级不同;
+           C (EE vendor 74,839 B / 1b285a56) 与 mainline 6.x 不兼容
+           -> 怀疑成立但 B 更完整, 先修 5.10, 不要先换 A
+修复镜像 : AURKNIX-A311D.aarch64-20261109-bootsafe-edidmode.img
+           sha256 efd716c4f6680ba16fad46e0a8beda6b611332d5962276845cc2f9f00093af9b
+           验收 PASS 15 / FAIL 0 / SKIP 10 (未接 U 盘), RESULT: PASS;
+           旧 markers 版现被 TC-IMG-16 判 FAIL
+           与 markers 版仅 4 个 512B 扇区不同:
+             0x1402000 (FAT 目录项 size) / 0x1403000 (cfgload)
+             0x2192000 (kernel.img header) / 0x3B37000 (kernel2.img header)
+           SYSTEM / 引导链其余字节 / 分区表零改动
+工具     : 新增 tools/a311d_video_mode.py
+           (--check/--drive/--image --out/--restore/--mode D|none)
+           与 tools/a311d_dtb_compare.py
+           (--list/--diff/--extract/--replace);
+           验收工具新增 TC-IMG-16 / TC-USB-09, TC-IMG-10 归一化 video token,
+           默认镜像改指 edidmode
+下一步   : 断电 -> U 盘插回 PC -> 查三分区 (本轮核心目标 ①) ->
+           现场补 --drive F: --mode D --yes 或重刷 edidmode 镜像 -> 上电;
+           若仍卡, 再按 5.11 做 DTB A/B 隔离测试 (一次只换一个变量)
+未完成   : SSH 内容验证、HDMI 画面、3.2/3.3 挂载与扩容实机值、
+           三分区是否生成、P2 外设实机、report-stats 现场处置 (5.8)
 ================================================================================

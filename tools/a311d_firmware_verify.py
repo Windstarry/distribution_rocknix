@@ -39,12 +39,41 @@ import sys
 
 SECTOR = 512
 DEFAULT_DIR = r"E:\A311d\AURKNIX-image-A311D-20261031"
-DEF_IMAGE = os.path.join(DEFAULT_DIR, "AURKNIX-A311D.aarch64-20261109-bootsafe-markers.img")
+DEF_IMAGE = os.path.join(DEFAULT_DIR, "AURKNIX-A311D.aarch64-20261109-bootsafe-edidmode.img")
 DEF_REFERENCE = os.path.join(DEFAULT_DIR, "ROCKNIX-S922X-BOX.aarch64-20261108.img")
 DEF_AURKNIX = os.path.join(DEFAULT_DIR, "AURKNIX-A311D.aarch64-20261031.img")
 
 CHAIN = ("aml_autoscript", "cfgload", "kernel.img", "dtb.img")
 BOOT_REQUIRED = CHAIN + ("SYSTEM", "SYSTEM.MD5")
+
+# The bootsafe chain hard-codes video=HDMI-A-1:1920x1080@60 in cfgload and in
+# the Android headers. That creates a DRM_MODE_TYPE_USERDEF mode which the
+# mainline meson DRM driver refuses ("User-defined mode not supported"). The
+# authorised fix is video=HDMI-A-1:D (or no video= at all), so the exact token
+# is normalised when comparing the chain against the pristine reference.
+VIDEO_TOKEN_RE = re.compile(rb"video=HDMI-A-1:[^\s\x00'\"]+")
+FORCED_VIDEO_RE = re.compile(rb"video=HDMI-A-1:[^\s\x00'\"]*\d+x\d+[^\s\x00'\"]*")
+
+
+def chain_md5_norm(fs, want, listing):
+    """md5 of a chain file with the video= mode token removed.
+
+    cfgload is text (its length changes when the token is shortened), while
+    the Android headers keep a fixed 512-byte cmdline slot. Normalise each
+    case separately so both the pristine and the patched chain hash equally.
+    Files without a video= token are hashed verbatim (binary DTBs must not be
+    touched by whitespace folding).
+    """
+    _name, data = fs.read(want, listing)
+    if data is None:
+        return None
+    if not VIDEO_TOKEN_RE.search(data):
+        return hashlib.md5(data).hexdigest()
+    folded = re.sub(rb" +", b" ", VIDEO_TOKEN_RE.sub(b"", data))
+    if data[:8] == b"ANDROID!":
+        slot = re.sub(rb" +", b" ", VIDEO_TOKEN_RE.sub(b"", data[64:576]))
+        folded = data[:64] + slot.ljust(512, b"\0") + data[576:]
+    return hashlib.md5(folded).hexdigest()
 EXPECTED_LABEL = "ROCKNIX"
 EXPECTED_STORAGE = "STORAGE"
 EXPECTED_CMDLINE_BITS = ("boot=LABEL=ROCKNIX", "disk=LABEL=STORAGE", "console=ttyAML0")
@@ -68,6 +97,8 @@ CHECKS = [
     ("TC-IMG-13", "image", "cfgload bootargs == kernel cmdline", "same boot=/disk= labels"),
     ("TC-IMG-14", "image", "whole-image sha256 (--sha256)", "digest recorded, no write"),
     ("TC-IMG-15", "image", "ms_unsupported OTA path marker", "ms_unsupported present on /flash"),
+    ("TC-IMG-16", "image", "no forced DRM user-defined mode",
+     "no video=HDMI-A-1:<WxH@Hz> in cfgload / Android header"),
     ("TC-USB-01", "usb", "drive reachable / label", "label ROCKNIX"),
     ("TC-USB-02", "usb", "flashed boot files complete", "all of " + ", ".join(BOOT_REQUIRED)),
     ("TC-USB-03", "usb", "flashed files byte-identical to image", "md5+size SAME for 6 files"),
@@ -77,6 +108,8 @@ CHECKS = [
     ("TC-USB-07", "usb", "raw MBR (--raw-disk N)", "P1 LBA/type == image MBR"),
     ("TC-USB-08", "usb", "first-boot markers on USB",
      "resize_storage_*G AND ms_unsupported both present (TC-IMG-12/15)"),
+    ("TC-USB-09", "usb", "no forced DRM mode on USB",
+     "cfgload + kernel.img header free of video=HDMI-A-1:<WxH@Hz>"),
 ]
 
 
@@ -402,13 +435,15 @@ def check_image(args, rep):
         rl = ref.files()
         diffs = []
         for w in CHAIN:
-            _, a = ref.md5(w, rl)
-            _, b = fs.md5(w, listing)
-            if not a or not b or a[0] != b[0]:
+            a = chain_md5_norm(ref, w, rl)
+            b = chain_md5_norm(fs, w, listing)
+            if not a or not b or a != b:
                 diffs.append(w)
         ref.close()
         rep.add("TC-IMG-10", "FAIL" if diffs else "PASS",
-                "different=%s" % (diffs or "none"), "expected: only SYSTEM/SYSTEM.MD5 differ")
+                "different=%s" % (diffs or "none"),
+                "only SYSTEM/SYSTEM.MD5 may differ; the video= mode token is "
+                "masked so tools/a311d_video_mode.py patches stay PASS")
     else:
         rep.add("TC-IMG-10", "SKIP", "reference image not found: %s" % args.reference)
 
@@ -435,6 +470,13 @@ def check_image(args, rep):
     rep.add("TC-IMG-15", "PASS" if ms_marker else "FAIL",
             "ms_unsupported=%s" % ms_marker,
             "init:838 selects /update_part/.update for OTA packages")
+    forced_mode = [n for n, b in
+                   (("header", (cmdline or "").encode("ascii", "replace")),
+                    ("cfgload", cfgload or b"")) if FORCED_VIDEO_RE.search(b)]
+    rep.add("TC-IMG-16", "FAIL" if forced_mode else "PASS",
+            "forced_mode_in=%s" % (forced_mode or "none"),
+            "video=<WxH@Hz> creates a USERDEF mode rejected by meson DRM; "
+            "use tools/a311d_video_mode.py to switch to video=HDMI-A-1:D")
 
     cfg_txt = (cfgload or b"").decode("latin1", "replace")
     cb, cd = labels_in_cmdline(cfg_txt)
@@ -556,6 +598,20 @@ def check_drive(args, rep, baseline):
     rep.add("TC-USB-08", "PASS" if markers_ok else "FAIL",
             "resize_markers=%s ms_unsupported=%s" % (resize_markers or "none", ms_marker),
             "without resize_storage_*G fs-resize grows STORAGE to 100% and skips the exFAT GAMES partition")
+
+    forced = []
+    for w in ("cfgload", "kernel.img", "kernel2.img"):
+        p = paths.get(w) or find_on_drive(drive, w, names)
+        if not p:
+            continue
+        with open(p, "rb") as f:
+            head = f.read(2048) if w != "cfgload" else f.read()
+        if FORCED_VIDEO_RE.search(head):
+            forced.append(w)
+    rep.add("TC-USB-09", "FAIL" if forced else "PASS",
+            "forced_mode_in=%s" % (forced or "none"),
+            "a forced video=<WxH@Hz> makes meson DRM reject the USERDEF mode "
+            "and can stall the display stack")
 
     if args.raw_disk is not None:
         raw = r"\\.\PhysicalDrive%d" % args.raw_disk
