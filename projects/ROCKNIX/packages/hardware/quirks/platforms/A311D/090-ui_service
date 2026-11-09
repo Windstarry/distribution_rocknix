@@ -1,0 +1,21 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2023 JELOS (https://github.com/JustEnoughLinuxOS)
+
+### Set the default device configuration
+mkdir -p /storage/.config/profile.d
+cat <<EOF >/storage/.config/profile.d/090-ui_service
+UI_SERVICE="sway.service essway.service"
+EOF
+
+### Remove the bring-up helper left behind by the 2026-11-09 frontend
+### triage (999-ui-service contained only "essway.service"). /etc/profile
+### sources /storage/.config/profile.d/* AFTER /etc/profile.d/*, and the
+### 999- prefix sorts last, so that stale file would override the value
+### written above and drop sway.service from the UI_SERVICE list.
+### Keep the file if it already carries the correct value (idempotent).
+if [ -f /storage/.config/profile.d/999-ui-service ]; then
+  if ! grep -q 'sway.service essway.service' /storage/.config/profile.d/999-ui-service; then
+    rm -f /storage/.config/profile.d/999-ui-service
+  fi
+fi

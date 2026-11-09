@@ -1,0 +1,261 @@
+================================================================================
+A311D / AURKNIX 前端服务与 GPU 栈修复  交接文档 (Handoff)
+版本: 2026-11-10 修订 1      时间口径: 北京时间 (GMT+8)
+适用分支: a311d              仓库: D:\ProgramData\distribution_rocknix
+================================================================================
+
+一、文档目的与范围
+
+本文记录截至 2026-11-10 00:20 的排查结论、本轮已落地的仓库改动、
+尚未完成的实机操作、验收方法与已知风险，供下一轮接手人（或下一次
+会话）直接接续，不需要重新推导根因。
+
+本轮只改仓库源码与工具，未改动实机设备、未改动 DTB、未改动系统
+unit、未改动 /flash/config.ini、未改动 system.cfg 用户层内容。实机
+重刷与 GitHub Actions 由操作者手动执行。
+
+二、当前进展总览
+
+已完成：
+  1. a311d 分支 Actions 构建修复，已产出 base image / 完整镜像。
+  2. A311D DTS 按实机 DTB 对齐 7 项差异，已推送（基线 4ac5386858）。
+  3. bootsafe 启动链、首启标记、三分区扩容、video=HDMI-A-1:D、
+     GAMES 分区 MBR 类型、report-stats 超时等历史问题均已闭环。
+  4. 前端与 GPU 栈的只读对比（现网 ROCKNIX 对照组 + AURKNIX 实机
+     复核），形成报告 E:\A311d\gpu_compare\frontend_stack_compare_20261109.txt。
+  5. 本轮仓库改动（见第三节）已落地并通过本地自测。
+
+未完成（阻塞项）：
+  1. KERNEL 与 SYSTEM 必须用同一次构建产物一起重刷（第四节第 1 项）。
+     此项不完成，后续任何 GPU 栈改动都不会生效。
+  2. 新镜像的 CI 构建（由操作者手动触发 action）。
+  3. 新镜像的实机验收（第五节）。
+
+三、决定性结论（三次修正后的最终版）
+
+3.1 原任务前提不成立
+最初判断「mali_kbase 内核模块与 libmali 用户态未一起打包」。2026-11-09
+23:58 的 AURKNIX 实机复核证明两者本来就在 SYSTEM 里：
+  /usr/lib/kernel-overlays/base/lib/modules/6.18.21/mali-bifrost/mali_kbase.ko
+  /usr/lib/kernel-overlays/base/lib/modules/6.18.21/kernel/drivers/gpu/drm/panfrost/panfrost.ko
+  /usr/lib/mali                     （10-31 00:35，131,849 字节，5 组库）
+  /usr/lib/libEGL_mesa.so.0.0.0
+  modules.dep 内两条模块记录均存在
+因此「把两个组件打包」无需再做，重复实现没有意义。
+
+3.2 真正的首要根因：KERNEL 与 SYSTEM 版本错配
+运行内核 6.18.49（11-08 20:02 构建，来自现网 ROCKNIX），而 SYSTEM 是
+10-31 构建（OS_VERSION=20261031），模块 vermagic 为
+「6.18.21 SMP preempt mod_unload aarch64」。结果：
+  /lib/modules/6.18.49 与 /usr/lib/modules/6.18.49 均为空目录、无 modules.dep
+  modprobe -n -v panfrost -> FATAL: Module panfrost not found in directory /lib/modules/6.18.49
+  autostart 日志同时报 panfrost not found / mali_kbase not found
+  lsmod 无任何 GPU 模块；/dev/dri 只有 card0 (ff900000.vpu)，
+  没有 card1 (ffe40000.gpu) 与 renderD128；无 /dev/mali*
+  ES 反复重启，报 No mali devices found / Could not initialize EGL
+vermagic 不匹配，把 6.18.21 目录软链到 6.18.49 也会被内核拒绝，
+临时绕过不可行。此前尝试 LD_PRELOAD、LD_LIBRARY_PATH overlay、
+SDL_VIDEO_GL_DRIVER 全部无效，原因是缺内核驱动创建的设备节点，
+不是用户态库路径问题。
+
+3.3 默认 GPU 栈必须是 panfrost，不是 libmali
+对照组：现网 ROCKNIX 20261108（next，BUILD_ID 0b991b0e...，
+HW_DEVICE=S922X-BOX，内核 6.18.49）能正常进前端，实际加载的是
+panfrost + Mesa（ES 进程映射 libEGL_mesa.so.0.0.0 / libgbm.so.1.0.0，
+/dev/dri/card1 + renderD128 正常，无 /dev/mali*）。
+决定性实验：操作者把该现网系统手动切为 libmali 后，前端同样起不来
+并需换回 AURKNIX。同一台设备、同一份 DTB，仅切换 GPU 栈即可复现。
+原因：实机 DTB 只有 gpu@ffe40000（arm,mali-bifrost，okay），没有
+arm,mali-midgard 厂商 DDK 节点，libmali 找不到设备。
+差异点落在配置层：现网 /usr/config/system/configs/system.cfg:227
+为 gpu.driver=panfrost；本仓库同文件 321 行全文无 gpu 行，
+gpudriver 缺省回落 libmali。
+
+3.4 UI_SERVICE 缺口
+/usr/bin/autostart 结尾执行 systemctl start ${UI_SERVICE}。
+本仓库 platforms/A311D 目录不存在，SYSTEM 的 /etc/profile.d 也无赋值，
+导致 systemctl[1695]: Too few arguments。
+现网由 platforms/S922X-BOX/090-ui_service 写入
+UI_SERVICE="sway.service essway.service"。
+AURKNIX 实机当前只解析到 essway.service，来源是上一轮调试残留的
+/storage/.config/profile.d/999-ui-service，缺少 sway.service。
+
+3.5 DTB 不是差异原因
+现网与 AURKNIX 的 /flash/dtb.img 均为 54,984 字节、
+md5 0fee9ffd2a2f3cb4a891b71176e3ee6a，与本地
+E:\A311d\AURKNIX-image-A311D-20261031\ 下 bootsafe / edidmode /
+S922X_ref 三份 DTB 字节级一致。
+
+3.6 已排除项
+rocknix-report-stats.service 本次 Result=success、job 已结束，不是前端
+未起的原因；ASoC dpcm_fe_dai_open() 告警已过；meson DRM user-defined
+mode 问题已由 video=HDMI-A-1:D 修复；GAMES 分区已手动格式化为
+MBR 0x07 + exFAT 并可用。
+
+四、本轮已落地的仓库改动（6 个文件）
+
+4.1 新建 projects/ROCKNIX/devices/A311D/filesystem/etc/profile.d/090-ui_service
+SYSTEM 层默认 UI_SERVICE="sway.service essway.service"。
+scripts/image:190-191 会把 devices/<DEVICE>/filesystem/* 拷进 SYSTEM 根。
+rocknix-autostart.service 以 bash -a -c 'source /etc/profile && exec
+/usr/bin/autostart' 启动，且 autostart 在 systemctl start 之前再次
+source /etc/profile，因此该文件每次启动都会被读取。
+
+4.2 新建 projects/ROCKNIX/packages/hardware/quirks/platforms/A311D/090-ui_service
+平台 quirk，用户层兜底。autostart 用 HW_DEVICE（scripts/image:163
+设为 DEVICE，即 A311D）定位 platforms/<HW_DEVICE> 并在早期执行；
+quirks/package.mk:22-25 只拷贝当前平台的目录。
+除写入规范的 090-ui_service 外，还会幂等清理上一轮调试残留
+/storage/.config/profile.d/999-ui-service。必须清理的原因：
+/etc/profile 先 source /etc/profile.d/*，后 source
+/storage/.config/profile.d/*，999- 前缀排在最后，会把 UI_SERVICE
+覆盖成只有 essway.service。
+
+4.3 修改 projects/ROCKNIX/packages/rocknix/package.mk
+在 makeinstall_target() 内按 DEVICE=A311D 条件，向 SYSTEM 的
+/usr/config/system/configs/system.cfg 注入或改写 gpu.driver=panfrost。
+不改共享默认值，其它设备不受影响。get_setting() 只读用户层
+/storage/.config/system/configs/system.cfg，该文件在首次启动时由
+001-functions:set_setting / post-update 从 SYSTEM 默认种子复制。
+
+4.4 修改 projects/ROCKNIX/packages/graphics/gpudriver/sources/bin/gpu-dtb
+附加防护。plan-rocknix-a311d.md 的 P3 计划里 dtb-panfrost.img 从未
+产出，而 gpudriver panfrost 会调用 gpu-dtb set panfrost，把
+gpu_dtb=dtb-panfrost.img 写进 /flash/config.ini；Generic_cfgload.src:23
+会据此 fatload 一个不存在的文件，下次启动有黑屏风险。
+现改为：目标 DTB 不存在且请求 panfrost 时回落 dtb.img（该 DTB 已被
+现网验证可驱动 panfrost/Mesa），否则不写 config.ini 并退出 1。
+
+4.5 新建 tools/a311d_gpu_stack_check.py
+只读一致性校验工具（Python 标准库，18 项检查）。
+离线 SYSTEM 检查 TC-SYS-01..10：UI_SERVICE、gpu.driver、A311D quirk、
+gpudriver 占位符、模块目录唯一性、panfrost.ko、mali_kbase.ko、
+libmali 用户态、modules.dep、vermagic 与目录版本一致性。
+实机检查 TC-LIVE-01..08：uname -r 与模块目录一致、modules.dep 存在、
+panfrost 已加载、card1/renderD 存在、gpu.driver、UI_SERVICE、
+sway/essway active 且 NRestarts 低、gpu_dtb 无悬空引用。
+支持 --list-checks / --probe-command / --root / --live / --json。
+退出码 0=无 FAIL，1=有 FAIL，2=用法或 IO 错误。
+
+4.6 新建 tools/a311d_handoff_20261110.txt（本文档）
+
+本轮未做（有意为之）：
+  未改 devices/A311D/options（ADDITIONAL_DRIVERS 已含 mali-bifrost、
+    ADDITIONAL_PACKAGES 已含 libmali、GRAPHIC_DRIVERS=panfrost，均正确）；
+  未改 A311D DTS（见第六节风险 2）；
+  未改 gpudriver/package.mk 的 A311D 分支；
+  未改任何 systemd unit、/flash/config.ini、DTB、系统级配置。
+
+本地验证结果：
+  sh -n / bash -n 四个 shell 片段全部 OK；
+  python -m py_compile 通过；
+  新增/修改文件全部 LF 行尾，无 CRLF；
+  工具自测：构造的正确 SYSTEM 树 PASS 10 / FAIL 0 / SKIP 0；
+  空树 FAIL 6；正确实机转储 PASS 8 / FAIL 0；
+  模拟「内核 6.18.49 + 模块 6.18.21 + libmali」混刷场景，
+  准确报出 TC-LIVE-01、TC-LIVE-05 两项 FAIL。
+
+五、待操作者执行（按顺序）
+
+第 1 步：用同一次构建产出的 KERNEL + SYSTEM 一起重刷（首要、必须）
+  当前混刷状态是全部 GPU 故障的根因。仅换 SYSTEM 或仅换 KERNEL
+  都不够：/lib/modules/$(uname -r) 下必须有配套模块与 modules.dep，
+  且 vermagic 必须与运行内核一致。
+  验收前置：uname -r 的值与
+  /usr/lib/kernel-overlays/base/lib/modules/ 下的唯一目录名相同。
+
+第 2 步：手动触发 GitHub Actions 构建 a311d 分支
+  本轮改动已推送 origin/a311d（ssh://git@ssh.github.com:443/
+  Windstarry/distribution_rocknix.git）。构建完成后取新镜像，
+  用 tools/a311d_firmware_verify.py 做刷盘前验收（含
+  TC-IMG-16 / TC-USB-09 强制 video 模式检查）。
+
+第 3 步：刷盘上电，首次启动处理旧 /storage 残留
+  旧 STORAGE 分区的用户层配置不会被新 SYSTEM 默认值覆盖：
+  post-update 使用 --exclude=configs，且 set_setting 只在用户层
+  system.cfg 不存在时才从 SYSTEM 复制。请在 SSH 到 192.168.31.7
+  （root / rocknix）后执行：
+
+    sed -i -e '/^gpu.driver=/c gpu.driver=panfrost' /storage/.config/system/configs/system.cfg
+    rm -f /storage/.config/profile.d/999-ui-service
+    sync
+    reboot
+
+  说明：新 A311D quirk 已能自愈 999-ui-service，上面这条只是让
+  首次启动前状态干净；gpu.driver 必须手工改，quirk 不会覆盖用户
+  主动设定。建议直接用 sed 改 cfg，不要用 gpudriver panfrost，
+  以免触发 gpu_dtb 写入（本轮已加回落保护，但旧镜像不含该保护）。
+
+第 4 步：实机验收（第五节之外再跑工具）
+  SSH 到设备后执行工具打印的采集命令：
+
+    python tools/a311d_gpu_stack_check.py --probe-command > probe.sh
+    # 把 probe.sh 内容贴到设备 shell 执行，生成 /tmp/a311d_probe.txt
+    # 再取回主机：
+    python tools/a311d_gpu_stack_check.py --live a311d_probe.txt
+
+  期望 TC-LIVE-01..08 全部 PASS。
+
+六、验收标准（人工确认）
+
+  1. /usr/bin/gpudriver 返回 panfrost。
+  2. lsmod | grep panfrost 有输出；无 mali_kbase。
+  3. ls /dev/dri 同时有 card0、card1、renderD128；无 /dev/mali*。
+  4. UI_SERVICE 解析为 sway.service essway.service。
+  5. sway.service / essway.service 均 active，NRestarts=0，
+     emulationstation 进程存在。
+  6. swaymsg -t get_outputs 返回 HDMI-A-1 connected。
+  7. 屏幕出现 EmulationStation 前端，可操作。
+  8. tools/a311d_gpu_stack_check.py --live 全 PASS。
+
+七、已知风险与未处理项
+
+  1. 首要阻塞：KERNEL + SYSTEM 配套重刷尚未执行。本轮所有仓库改动
+     在混刷状态下都不会显现效果。
+  2. 仓库 A311D DTS 的 GPU 节点策略与实机 DTB 相反：仓库是
+     mali_vulkan okay / &mali disabled，实机 DTB 只有
+     arm,mali-bifrost 节点。当前 bootsafe 镜像使用实机 DTB，
+     不受影响；若日后改用仓库编译的 DTB，必须先翻转策略并
+     重新做实机验证，否则 panfrost 也绑不上。
+  3. dtb-panfrost.img 始终未产出（plan-rocknix-a311d.md 的 P3）。
+     本轮 gpu-dtb 已加回落保护，但「双 DTB 变体切换」功能本身
+     仍未完整实现，目前实际只有一份可用 DTB。
+  4. 本轮改动未经 CI 构建与实机验证，需等操作者手动 action。
+  5. 最后一次实机 SSH 采集超时（设备可能下电），因此本轮未做
+     改动后的实机复核；改动均在仓库层，不影响设备现状。
+  6. 旧 /storage 的 gpu.driver=libmali 与 999-ui-service 残留，
+     若跳过第五节第 3 步，新默认值不会生效。
+
+八、关键数据基线
+
+  分支 / 基线提交 : a311d / 4ac5386858（本轮提交之前的 HEAD）
+  远程 origin      : ssh://git@ssh.github.com:443/Windstarry/distribution_rocknix.git
+  实机 SSH         : 192.168.31.7  root / rocknix
+  推荐镜像         : E:\A311d\AURKNIX-image-A311D-20261031\
+                     AURKNIX-A311D.aarch64-20261109-bootsafe-edidmode.img
+                     sha256 efd716c4f6680ba16fad46e0a8beda6b611332d5962276845cc2f9f00093af9b
+  markers 回滚镜像 : sha256 c9a65948...ff4f（带强制 video=，已判 FAIL，勿作首选）
+  实机 DTB         : 54,984 字节  md5 0fee9ffd2a2f3cb4a891b71176e3ee6a
+  现网对照组       : ROCKNIX 20261108 next / HW_DEVICE=S922X-BOX / 6.18.49
+  AURKNIX 现状     : OS_VERSION 20261031 / HW_DEVICE=A311D /
+                     内核 6.18.49 / 模块目录 6.18.21（错配）
+  cmdline          : 已含 video=HDMI-A-1:D
+  对比报告         : E:\A311d\gpu_compare\frontend_stack_compare_20261109.txt
+                     （含补记一「现网切 libmali 实验」与
+                       补记二「AURKNIX 实机复核、内核与模块版本错配」）
+
+九、回滚指引
+
+  代码回滚：在 a311d 分支上 revert 本轮提交，或按需单独还原
+  4.1~4.5 的五个文件；基线 4ac5386858 可作为对照。
+  实机回滚：保留现有 bootsafe-edidmode 镜像与已格式化的
+  GAMES 分区；若新镜像启动异常，重新刷回该镜像即可，
+  不需要重新分区。
+  配置回滚：/storage/.config/system/configs/system.cfg 中把
+  gpu.driver 改回 libmali、/flash/config.ini 中删除 gpu_dtb 行，
+  再 reboot；注意 libmali 在本板卡实机已证实不可用。
+
+================================================================================
+文档结束。下一轮接手请先执行第五节第 1 步（配套重刷），
+再用 tools/a311d_gpu_stack_check.py 做一次全量检查。
+================================================================================

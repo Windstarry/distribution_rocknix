@@ -21,6 +21,24 @@ makeinstall_target() {
   ln -sf /storage/.config/system ${INSTALL}/system
   find ${INSTALL}/usr/config/system/ -type f -exec chmod o+x {} \;
 
+  ### A311D boots with the mainline GPU node (gpu@ffe40000,
+  ### "arm,mali-bifrost"). The libmali vendor DDK expects a midgard node
+  ### that the verified chain-boot DTB does not contain, so the generic
+  ### gpudriver default (libmali) leaves EmulationStation without an EGL
+  ### display: "No mali devices found" / "Could not initialize EGL".
+  ### Pin panfrost/Mesa in the SYSTEM defaults. get_setting() only reads
+  ### /storage/.config/system/configs/system.cfg, which is seeded from
+  ### this file on first boot (001-functions:set_setting / post-update).
+  if [ "${DEVICE}" = "A311D" ]
+  then
+    if grep -q '^gpu.driver=' ${INSTALL}/usr/config/system/configs/system.cfg
+    then
+      sed -i "s#^gpu.driver=.*#gpu.driver=panfrost#" ${INSTALL}/usr/config/system/configs/system.cfg
+    else
+      echo "gpu.driver=panfrost" >> ${INSTALL}/usr/config/system/configs/system.cfg
+    fi
+  fi
+
   mkdir -p ${INSTALL}/usr/bin/
 
   ### Compatibility links for ports

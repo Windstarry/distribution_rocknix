@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# A311D SYSTEM-level default for the front-end service list.
+#
+# /usr/bin/autostart ends with "systemctl start ${UI_SERVICE}". Without a
+# value here (or in /storage/.config/profile.d) systemd is invoked with no
+# unit name and refuses to start anything:
+#   systemctl[1695]: Too few arguments.
+#
+# A311D needs sway (Wayland compositor) first and EmulationStation (essway)
+# on top of it. Starting essway alone leaves the front-end without an EGL
+# display. rocknix-autostart.service runs bash with "source /etc/profile",
+# and /usr/bin/autostart re-sources /etc/profile just before starting the
+# UI, so a value in this directory is picked up on every boot.
+#
+# /etc/profile sources /etc/profile.d/* BEFORE /storage/.config/profile.d/*,
+# so the matching platform quirk (quirks/platforms/A311D/090-ui_service)
+# writes the same value into /storage as a user-layer fallback.
+UI_SERVICE="sway.service essway.service"

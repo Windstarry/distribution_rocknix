@@ -28,7 +28,18 @@ if [ ! -f "${CONFIG_INI}" ]; then
 fi
 
 if [ ! -f "${BOOT_ROOT}/${DTB}" ]; then
-  echo "gpu-dtb: warning: ${BOOT_ROOT}/${DTB} is missing" >&2
+  # The panfrost DTB variant was never produced for the chain-boot image,
+  # and the verified dtb.img (arm,mali-bifrost) already drives panfrost/Mesa.
+  # Never point config.ini at a missing file: cfgload would fatload it on
+  # the next boot and the box would black-screen. Fall back instead.
+  if [ "$1" = "panfrost" ] && [ -f "${BOOT_ROOT}/dtb.img" ]
+  then
+    echo "gpu-dtb: ${DTB} not present, falling back to dtb.img (verified panfrost DTB)" >&2
+    DTB="dtb.img"
+  else
+    echo "gpu-dtb: ${BOOT_ROOT}/${DTB} is missing, keeping the current dtb" >&2
+    exit 1
+  fi
 fi
 
 mount -o remount,rw "${BOOT_ROOT}" 2>/dev/null
