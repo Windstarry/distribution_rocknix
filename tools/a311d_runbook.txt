@@ -243,6 +243,42 @@ A311D / bootsafe 启动固件  实机检查清单 (Runbook)
   失败: 清 marker + reset-failed 后该单元仍反复 failed, 或 ③ 显示
         rocknix-autostart.service failed -> 转 5.7 / 串口抓日志
 
+5.9 首启扩容后只有 2 个分区 / 没有 GAMES(exFAT) 盘 (本次实际状态)
+  现象: 32GB U 盘首启扩容后 Windows 只见 F: (FAT32 ROCKNIX),
+        P2 = 29.2 GiB "Unknown"(ext4 STORAGE), 无第三分区;
+        正常的 AURKNIX 盘是 P1 FAT32 + P2 ext4 STORAGE(10 GiB)
+        + P3 exFAT GAMES 三个分区
+  根因: bootsafe 镜像 100% 继承 S922X-BOX 参考镜像的 /flash, 缺
+        resize_storage_10G 与 ms_unsupported 两个 0 字节标记
+        (CI 镜像由 scripts/mkimage:284/286 生成)
+        -> fs-resize:23 RESIZE_FILE 为空 -> :87 resizepart 2 100%
+        -> P2 吃掉全部剩余空间, :92-106 的 GAMES 分支不执行
+        实锤: /flash/fs-resize.log 记录 "resizepart 2 100%" 且
+              resize2fs 到 7663616 (4k) blocks = 31,390,171,136 B,
+              与 Get-Partition 看到的 P2 大小字节级一致
+        注意: P2 一直是 ext4, 与正常系统相同; 差异是缺 P3, 不是格式错
+  影响: 不阻塞启动/升级 (STORAGE 正常, /roms 是 /storage/roms 符号链接),
+        但 Windows 无法直接读写 ROMs 盘; 缺 ms_unsupported 会让 OTA
+        从 /update_part/roms/.update 找包 (init:838), 可能找不到升级包
+  判定: 通过 = 3 分区, P3 exFAT 卷标 GAMES
+        失败 = 2 分区且 P2 = 全部剩余空间
+  处置: ① 已扩容的盘补标记不会重跑 (fs-resize:30 检测到
+           /storage/.config|.cache 会拒绝并 reboot), 必须重刷
+        ② 推荐: Rufus DD 模式刷修复版镜像
+           E:\A311d\AURKNIX-image-A311D-20261031\
+             AURKNIX-A311D.aarch64-20261109-bootsafe-markers.img
+           sha256 c9a659480cd7bdadc06e9a8f79634632c1db7eee09c86e78900ee88bc021ff4f
+        ③ 自行生成: python tools/make_a311d_bootable.py --aurknix ... \
+           --reference ... --output ... (默认自动注入两个标记)
+        ④ 只给现有盘补标记: python tools/a311d_fat_markers.py --drive F:
+           仅对未扩容盘有效; ms_unsupported 对 OTA 立即生效
+  验证: python tools/a311d_firmware_verify.py --image <修复版镜像>
+        -> TC-IMG-12 / TC-IMG-15 均 PASS, RESULT: PASS
+        旧 bootsafe 镜像这两项 FAIL (验收工具已加硬判定)
+  成功: 首启扩容后 3 分区, P3 exFAT 卷标 GAMES, Windows 可挂载
+  失败: 仍 2 分区 -> 查 /flash/resize_storage_10G 是否随镜像刷入、
+        fs-resize.log 是否走 resizepart 2 10G 分支
+
 --------------------------------------------------------------------------------
 附录: 本轮验证记录 (2026-11-09)
 --------------------------------------------------------------------------------
@@ -266,6 +302,14 @@ A311D / bootsafe 启动固件  实机检查清单 (Runbook)
 服务修复 : 5.8 rocknix-report-stats - 统计上报改 opt-in 默认关闭 + 失败非致命;
            tools/verify_report_stats.py 实跑 15 PASS / 0 FAIL
            (报告 E:\A311d\tools\report_stats_verify.json)
+分区修复 : 5.9 bootsafe 缺 resize_storage_10G / ms_unsupported -> 首启
+           resizepart 2 100%, 无 exFAT GAMES 分区; 修复版镜像
+           AURKNIX-A311D.aarch64-20261109-bootsafe-markers.img
+           (sha256 c9a65948...), 验收 RESULT=PASS (14 PASS/0 FAIL/8 SKIP)
+新旧对比 : 旧 bootsafe TC-IMG-12/15 FAIL -> RESULT: FAIL;
+           修复版两项 PASS -> verify_report_markers.json
+镜像差异 : --add 注入仅 172 B 根目录差异 (6 个 FAT LFN/短名目录项),
+           SYSTEM/引导链/分区表零改动, 大小写精确为 resize_storage_10G
 未完成   : 3.1 SSH 内容验证 (需启动完成后一次口令交互)、HDMI 画面状态、
            3.2/3.3 挂载与扩容实机值、P2 外设实机 (本轮 DTB 未含)
 ================================================================================

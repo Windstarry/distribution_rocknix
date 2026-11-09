@@ -13,7 +13,7 @@ cainiao DTB) and swaps in the AURKNIX SYSTEM squashfs.
 This tool turns that construction into machine-checkable acceptance tests:
   * static image checks  (TC-IMG-xx) - run before flashing
   * USB drive checks     (TC-USB-xx) - run after Rufus, before power-on
-  * optional marker fix  (--fix-markers) - opt-in, writes one empty file
+  * optional marker fix  (--fix-markers) - opt-in, writes two empty files
 
 Stdlib only. Reads images in place; never modifies the image. The only write
 operation is --fix-markers on the USB drive, and it requires --yes.
@@ -62,9 +62,11 @@ CHECKS = [
     ("TC-IMG-09", "image", "SYSTEM md5 == SYSTEM.MD5", "md5 digest identical"),
     ("TC-IMG-10", "image", "boot chain byte-identical to reference", "4 chain files SAME"),
     ("TC-IMG-11", "image", "SYSTEM is the AURKNIX rootfs", "md5 == CI AURKNIX image SYSTEM"),
-    ("TC-IMG-12", "image", "first-boot resize trigger", "/storage/.please_resize_me present"),
+    ("TC-IMG-12", "image", "first-boot resize trigger + 10G marker",
+     ".please_resize_me AND resize_storage_10G => 10G STORAGE + exFAT GAMES"),
     ("TC-IMG-13", "image", "cfgload bootargs == kernel cmdline", "same boot=/disk= labels"),
     ("TC-IMG-14", "image", "whole-image sha256 (--sha256)", "digest recorded, no write"),
+    ("TC-IMG-15", "image", "ms_unsupported OTA path marker", "ms_unsupported present on /flash"),
     ("TC-USB-01", "usb", "drive reachable / label", "label ROCKNIX"),
     ("TC-USB-02", "usb", "flashed boot files complete", "all of " + ", ".join(BOOT_REQUIRED)),
     ("TC-USB-03", "usb", "flashed files byte-identical to image", "md5+size SAME for 6 files"),
@@ -418,10 +420,18 @@ def check_image(args, rep):
         rep.add("TC-IMG-11", "SKIP", "CI AURKNIX image not found: %s" % args.aurknix)
 
     trigger = has_resize_trigger(fs.f, p2) if p2 else False
-    markers = [n for n in listing if re.match(r"resize_storage_\d+G", n, re.I)]
-    rep.add("TC-IMG-12", "PASS" if trigger else "FAIL",
+    # fs-resize uses `find /flash -name 'resize_storage_*G'` (case sensitive):
+    # without this marker it takes resizepart 2 100%, so STORAGE (ext4) eats
+    # the whole disk and the third exFAT GAMES partition is never created.
+    markers = [n for n in listing if re.fullmatch(r"resize_storage_\d+G", n)]
+    ok = bool(trigger and markers)
+    rep.add("TC-IMG-12", "PASS" if ok else "FAIL",
             ".please_resize_me=%s flash_markers=%s" % (trigger, markers or "none"),
-            "no marker => STORAGE grows to 100%, no GAMES partition")
+            "missing marker => 100% ext4 STORAGE, NO GAMES partition")
+    ms_marker = "ms_unsupported" in [n.lower() for n in listing]
+    rep.add("TC-IMG-15", "PASS" if ms_marker else "FAIL",
+            "ms_unsupported=%s" % ms_marker,
+            "init:838 selects /update_part/.update for OTA packages")
 
     cfg_txt = (cfgload or b"").decode("latin1", "replace")
     cb, cd = labels_in_cmdline(cfg_txt)
@@ -554,21 +564,30 @@ def fix_markers(args):
     if not os.path.isdir(drive):
         print("ERROR: drive not accessible: %s" % drive)
         return 2
-    existing = [n for n in os.listdir(drive) if re.match(r"resize_storage_\d+G", n, re.I)]
-    if existing:
-        print("INFO: marker already present: %s (nothing to do)" % existing[0])
+    names = os.listdir(drive)
+    todo = []
+    if not [n for n in names if re.match(r"resize_storage_\d+G", n, re.I)]:
+        todo.append("resize_storage_10G")
+    if "ms_unsupported" not in [n.lower() for n in names]:
+        todo.append("ms_unsupported")
+    if not todo:
+        print("INFO: both markers already present (nothing to do)")
         return 0
-    target = os.path.join(drive, "resize_storage_10G")
-    print("About to create: %s" % target)
+    print("About to create: %s" % ", ".join(os.path.join(drive, n) for n in todo))
     print("Effect: first boot expands STORAGE to 10 GiB and creates an EXFAT GAMES")
     print("        partition in the remaining space (fs-resize lines 22-26, 84-106).")
-    print("Without the marker STORAGE grows to 100% and NO GAMES partition is made.")
+    print("        ms_unsupported selects the OTA path /update_part/.update (init:838).")
+    print("Without resize_storage_10G STORAGE grows to 100% and NO GAMES is made.")
+    print("NOTE: on an already-expanded disk fs-resize refuses to run again;")
+    print("      reflash the image to actually obtain the GAMES partition.")
     if not args.yes:
         print("ABORT: pass --yes to apply. No file was written.")
         return 0
-    with open(target, "wb"):
-        pass
-    print("CREATED: %s (%d bytes)" % (target, os.path.getsize(target)))
+    for n in todo:
+        target = os.path.join(drive, n)
+        with open(target, "wb"):
+            pass
+        print("CREATED: %s (%d bytes)" % (target, os.path.getsize(target)))
     return 0
 
 

@@ -26,6 +26,17 @@ Usage
 The output keeps the reference FAT volume label (ROCKNIX) because the
 reference kernel cmdline is "boot=LABEL=ROCKNIX".  Do not rename that label
 unless you also patch the cmdline inside kernel.img.
+
+First-boot markers
+------------------
+scripts/mkimage:284/286 puts two zero-byte files on /flash of a CI-built
+image: resize_storage_10G and ms_unsupported. The S922X-BOX reference image
+has neither. Without resize_storage_10G, fs-resize takes the
+"resizepart 2 100%" branch, so STORAGE (ext4) eats the whole disk and the
+third exFAT GAMES partition is never created. Without ms_unsupported, OTA
+looks for updates under /update_part/roms/.update instead of /update_part/.update.
+This tool therefore injects both markers by default (use --no-markers to keep
+the reference layout verbatim).
 """
 
 import argparse
@@ -36,6 +47,11 @@ import shutil
 import struct
 import sys
 import tempfile
+
+try:  # same directory; keeps this tool self-contained if the helper is absent
+    from a311d_fat_markers import inject_markers
+except ImportError:
+    inject_markers = None
 
 SECTOR = 512
 ATTR_LFN = 0x0F
@@ -213,6 +229,8 @@ def main():
     ap.add_argument("--aurknix", required=True, help="CI-built AURKNIX .img or .img.gz")
     ap.add_argument("--reference", required=True, help="known-good ROCKNIX S922X-BOX .img")
     ap.add_argument("--output", required=True, help="output flashable .img")
+    ap.add_argument("--no-markers", action="store_true",
+                    help="do not inject resize_storage_10G / ms_unsupported")
     args = ap.parse_args()
 
     for p in (args.aurknix, args.reference):
@@ -224,13 +242,13 @@ def main():
     with tempfile.TemporaryDirectory(prefix="a311d-bootfix-") as workdir:
         src_path = maybe_decompress(args.aurknix, workdir)
 
-        print("[1/5] reading AURKNIX SYSTEM")
+        print("[1/6] reading AURKNIX SYSTEM")
         src = FAT32(src_path)
         s_off, s_entry = src.find_entry("SYSTEM     ")
         size = src.entry_size(s_entry)
         print("      source SYSTEM: %d bytes, FAT label %s" % (size, src.label))
 
-        print("[2/5] copying reference image as base")
+        print("[2/6] copying reference image as base")
         shutil.copyfile(args.reference, args.output)
         ref = FAT32(args.reference)
         r_off, r_entry = ref.find_entry("SYSTEM     ")
@@ -241,7 +259,7 @@ def main():
                              "need a bigger BOOT partition" % (size, ref_size))
         ref.close()
 
-        print("[3/5] streaming AURKNIX SYSTEM into the bootable base + md5")
+        print("[3/6] streaming AURKNIX SYSTEM into the bootable base + md5")
         md5 = hashlib.md5()
 
         def source_iter():
@@ -262,7 +280,7 @@ def main():
         dst.close()
         src.close()
 
-        print("[4/5] verifying output image")
+        print("[4/6] verifying output image")
         check = FAT32(args.output)
         got = verify(check, digest, size)
         print("      SYSTEM md5  : %s" % got)
@@ -278,7 +296,18 @@ def main():
             print("        %-14s %d bytes" % (short, check.entry_size(e)))
         check.close()
 
-        print("[5/5] sha256")
+        print("[5/6] first-boot markers (10G STORAGE + exFAT GAMES)")
+        if args.no_markers:
+            print("      skipped by --no-markers: first boot will expand STORAGE")
+            print("      to 100% ext4 and create NO GAMES partition")
+        elif inject_markers is None:
+            print("      WARNING: a311d_fat_markers.py is not next to this tool;")
+            print("      run: python tools/a311d_fat_markers.py --add <out> --out <new>")
+        else:
+            added = inject_markers(args.output)
+            print("      %s" % (", ".join(added) if added else "already present"))
+
+        print("[6/6] sha256")
         h = hashlib.sha256()
         with open(args.output, "rb") as f:
             for block in iter(lambda: f.read(8 * 1024 * 1024), b""):

@@ -19,8 +19,12 @@ local HTTP endpoint. Standard library only, no external dependencies.
 Usage
 -----
   python tools/verify_report_stats.py
+  python E:/A311d/tools/verify_report_stats.py            # same tool, local copy
   python tools/verify_report_stats.py --json E:/A311d/tools/report_stats_verify.json
   python tools/verify_report_stats.py --repo-root D:/ProgramData/distribution_rocknix
+
+The repo root is auto-detected, so the E:\\A311d\\tools copy works without
+arguments.
 
 Exit code 0 = all checks passed, 1 = at least one FAIL.
 """
@@ -40,7 +44,6 @@ import threading
 import time
 from pathlib import Path
 
-REPO_ROOT_DEFAULT = Path(__file__).resolve().parents[1]
 PKG = Path("projects/ROCKNIX/packages/rocknix")
 SCRIPT_REL = PKG / "sources/scripts/rocknix-report-stats"
 UNIT_REL = PKG / "system.d/rocknix-report-stats.service"
@@ -51,6 +54,18 @@ POST_UPDATE_REL = PKG / "sources/post-update"
 
 MACHINE_ID = "abcdefghijklmnop"
 UID12 = MACHINE_ID[-12:]  # efghijklmnop
+
+
+def default_repo_root() -> Path:
+    """Work both from <repo>/tools and from the E:\\A311d\\tools copy."""
+    here = Path(__file__).resolve()
+    for cand in (here.parents[1], Path("D:/ProgramData/distribution_rocknix"), Path.cwd()):
+        try:
+            if (cand / SCRIPT_REL).is_file():
+                return cand
+        except OSError:
+            continue
+    return here.parents[1]
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -249,7 +264,7 @@ def behaviour_checks(sh: str | None, script: Path, rep: Report) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--repo-root", default=str(REPO_ROOT_DEFAULT))
+    ap.add_argument("--repo-root", default=str(default_repo_root()))
     ap.add_argument("--json", dest="json_out", default=None, help="write JSON report here")
     ap.add_argument("--list-checks", action="store_true")
     args = ap.parse_args()
