@@ -1,9 +1,16 @@
 [Unit]
 Description=Report anonymous ROCKNIX install statistics
 ConditionPathExists=!/storage/.cache/rocknix-stats-reported
+ConditionPathExists=/storage/.cache/systemd-machine-id
 
 [Service]
 Type=oneshot
+# Best-effort reporting must never hang the boot timer job (the script's
+# worst case is 2 x (15s curl + 10s backoff) = 50s).
+TimeoutStartSec=90s
+# Belt and braces for an older script or a broken /etc/profile: a failure
+# to reach the statistics endpoint is not a system failure.
+SuccessExitStatus=1
 ExecStart=/usr/bin/rocknix-report-stats
 
 [Install]

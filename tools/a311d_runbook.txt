@@ -207,6 +207,42 @@ A311D / bootsafe 启动固件  实机检查清单 (Runbook)
   成功: 连续 3 轮 BOOTED + 3.1 登录成功 + 3.2 /flash 挂载正常
   失败: 5 分钟后仍无稳定 22 或始终认证失败且串口显示 rootfs 挂载失败 -> 回到 5.5
 
+5.8 控制台出现 [FAILED] Failed to start rocknix-report-stats.service (本次实际状态)
+  性质: 非致命。该服务是 Type=oneshot, 仅由 rocknix-report-stats.timer
+        (OnBootSec=5min) 触发; 全仓库无其它 unit Requires/Wants/After 它,
+        rocknix.target 只 Requires=multi-user.target + graphical.target
+        -> 它失败不会中断升级流程, 也不会阻止进入 EmulationStation
+  根因: ① 旧脚本用 ping -c 1 8.8.8.8 判定联网, CN 上行 ICMP 基本不通
+        ② 端点 https://rocknix.dpdns.org (第三方 DDNS) 不可达
+        ③ 5 x 60s 重试后 exit 1 -> systemd 标 failed, 系统变 degraded
+        ④ post-update:303 每次升级都删除
+           /storage/.cache/rocknix-stats-reported -> 每次升级必复现
+  判定: 通过 = 能进主界面 / 22+445 稳定 / systemctl is-system-running
+              最多为 degraded 且 --failed 只列出这一个单元
+        失败 = 屏幕停在 "Performing post-update configuration..." 或
+              "Setting root password..." 超过 10 分钟 -> 与统计服务无关,
+              按处置 ③ 取升级日志
+  处置: ① 立即消除报错 (设备本地 TTY 或 SSH, 两行):
+              touch /storage/.cache/rocknix-stats-reported
+              systemctl reset-failed rocknix-report-stats.service
+            ConditionPathExists=!marker 命中后服务直接跳过, 不再进入 failed
+        ② 根治 (已提交 a311d): 统计上报改为 stats.enabled 默认 0 (opt-in)、
+           任何失败一律 exit 0、curl 加 --fail/--connect-timeout/--max-time、
+           去掉 8.8.8.8 门与 bash-only ${VAR:(-N)}; service 补
+           TimeoutStartSec=90s / SuccessExitStatus=1 / machine-id 条件。
+           下次出镜像刷盘后不再出现该报错
+        ③ 若屏幕确实卡在升级画面, 统计服务不是原因, 取日志:
+              cat /var/log/upgrade.log
+              journalctl -u rocknix-autostart -b --no-pager
+              systemctl --failed; systemctl is-system-running
+            post-update 由 autostart/003-upgrade 调用, 与统计服务无因果关系
+  验证: PC 端 python tools/verify_report_stats.py
+        (15 项: sh -n 语法、静态加固项、4 个行为用例含本地 HTTP 端点)
+  成功: systemctl --failed 不含 rocknix-report-stats (或显示 condition
+        未满足的 inactive, 不算 failed), 且正常进入主界面
+  失败: 清 marker + reset-failed 后该单元仍反复 failed, 或 ③ 显示
+        rocknix-autostart.service failed -> 转 5.7 / 串口抓日志
+
 --------------------------------------------------------------------------------
 附录: 本轮验证记录 (2026-11-09)
 --------------------------------------------------------------------------------
@@ -227,6 +263,9 @@ A311D / bootsafe 启动固件  实机检查清单 (Runbook)
            60 s 实测 22/445 抖动 -> 状态机补 BOOTING / REBOOTING,
            避免把"445 在线、22 暂退"误报成 NO_LINK
 版本来源 : firstboot/update.sh:44-47 设 rotate.root.password=0 / ssh.enabled=0
+服务修复 : 5.8 rocknix-report-stats - 统计上报改 opt-in 默认关闭 + 失败非致命;
+           tools/verify_report_stats.py 实跑 15 PASS / 0 FAIL
+           (报告 E:\A311d\tools\report_stats_verify.json)
 未完成   : 3.1 SSH 内容验证 (需启动完成后一次口令交互)、HDMI 画面状态、
            3.2/3.3 挂载与扩容实机值、P2 外设实机 (本轮 DTB 未含)
 ================================================================================

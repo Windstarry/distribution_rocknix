@@ -1,52 +1,83 @@
 #!/bin/sh
-# This script reports non personally identifiable information to ROCKNIX so that we can
-# see active user statistics.
+# Report anonymous install statistics (best effort, opt-in).
+#
+# AURKNIX hardening notes:
+#   * Reporting is opt-in via stats.enabled in system.cfg and defaults to
+#     off. A self-built image must not phone home to a third party DDNS
+#     endpoint, and that endpoint is unreachable on most CN networks anyway.
+#   * A failed report must never fail the systemd unit. This is a Type=oneshot
+#     service triggered by a 5-minute boot timer; exit 1 makes systemd print
+#     "[FAILED] Failed to start rocknix-report-stats.service" on the boot
+#     console and leaves the system in degraded state, which is easily
+#     mistaken for a failed OS upgrade.
+#   * The old "ping -c 1 8.8.8.8" connectivity gate is useless behind a CN
+#     uplink (ICMP to 8.8.8.8 is normally blocked). Probe the endpoint
+#     directly with curl and bounded timeouts instead.
+#   * The old ${USERID:(-12)} is a bash-only substring expansion while this
+#     script runs under /bin/sh. Use tail -c for POSIX compatibility.
+#
+# The ROCKNIX_STATS_* variables are optional overrides used by the offline
+# verification tool. In production they are unset and the /storage paths
+# and the https endpoint below are used.
 
-. /etc/profile
+[ "${ROCKNIX_SKIP_PROFILE}" = "1" ] || . /etc/profile 2>/dev/null || true
 
-MACHINEIDFILE=/storage/.cache/systemd-machine-id
-STATS_SENT_MARKER=/storage/.cache/rocknix-stats-reported
-USERID=$(cat ${MACHINEIDFILE})
+STORAGE_ROOT="${ROCKNIX_STORAGE_ROOT:-/storage}"
+SYSCFG="${ROCKNIX_STATS_SYSCFG:-${STORAGE_ROOT}/.config/system/configs/system.cfg}"
+MACHINEIDFILE="${ROCKNIX_STATS_MACHINE_ID:-${STORAGE_ROOT}/.cache/systemd-machine-id}"
+STATS_SENT_MARKER="${ROCKNIX_STATS_MARKER:-${STORAGE_ROOT}/.cache/rocknix-stats-reported}"
+ENDPOINT_URL_MOD="${ROCKNIX_STATS_ENDPOINT:-https://rocknix.dpdns.org}"
+MAX_RETRIES="${ROCKNIX_STATS_RETRIES:-2}"
+RETRY_DELAY="${ROCKNIX_STATS_RETRY_DELAY:-10}"
+CONNECT_TIMEOUT="${ROCKNIX_STATS_CONNECT_TIMEOUT:-5}"
+MAX_TIME="${ROCKNIX_STATS_MAX_TIME:-15}"
 
-ENDPOINT_URL_MOD="https://rocknix.dpdns.org"
-MAX_RETRIES=5
-RETRY_DELAY=60
+# Always succeed: reporting is best effort. systemd records the exit status
+# of a oneshot unit, so a non-zero code here is pure user-visible noise.
+report_done() {
+    echo "$1"
+    exit 0
+}
+
+# Opt-in gate. Default (and the shipped system.cfg value) is 0.
+STATS_ENABLED=$(sed -n 's/^stats\.enabled=//p' "${SYSCFG}" 2>/dev/null | tail -n 1)
+case "${STATS_ENABLED}" in
+    1|true|yes|on) ;;
+    *) report_done "Statistics reporting disabled (stats.enabled is not 1)." ;;
+esac
+
+[ -r "${MACHINEIDFILE}" ] || report_done "No machine id available, skipping statistics."
+
+USERID=$(cat "${MACHINEIDFILE}" 2>/dev/null | tr -d '\r\n')
+[ -n "${USERID}" ] || report_done "Empty machine id, skipping statistics."
+UID12=$(printf '%s' "${USERID}" | tail -c 12)
 
 send_stats() {
-    curl -s -S -X POST \
-        -F "ROCKNIX_UID=${USERID:(-12)}" \
+    # --fail matters: curl exits 0 for HTTP 4xx/5xx unless told otherwise,
+    # which would write the "already reported" marker after a failed POST.
+    curl -s -S --fail \
+        --connect-timeout "${CONNECT_TIMEOUT}" \
+        --max-time "${MAX_TIME}" \
+        -X POST \
+        -F "ROCKNIX_UID=${UID12}" \
         -F "ROCKNIX_VERSION=${OS_VERSION}" \
         -F "ROCKNIX_BUILD=aurknix" \
         -F "ROCKNIX_SOC=${HW_DEVICE}" \
         -F "ROCKNIX_DEV=${QUIRK_DEVICE}" \
-        $ENDPOINT_URL_MOD
-    rc1=$?
-
-    return $rc1
+        "${ENDPOINT_URL_MOD}" >/dev/null
 }
 
-# Try to send stats with retries
 retry_count=0
-while [ $retry_count -lt $MAX_RETRIES ]; do
-    # Check network connectivity first (ping DNS server)
-    if ping -c 1 8.8.8.8 >/dev/null 2>&1; then
-        send_stats
-        exit_code=$?
-
-        if [ $exit_code -eq 0 ]; then
-            touch "${STATS_SENT_MARKER}" 2>/dev/null || true
-            echo "Statistics reported successfully."
-            exit 0
-        else
-            echo "Failed to send statistics (HTTP error). Retrying in $RETRY_DELAY seconds..."
-        fi
-    else
-        echo "Network connection unavailable. Retrying in $RETRY_DELAY seconds..."
+while [ "${retry_count}" -lt "${MAX_RETRIES}" ]; do
+    if send_stats; then
+        mkdir -p "$(dirname "${STATS_SENT_MARKER}")" 2>/dev/null || true
+        touch "${STATS_SENT_MARKER}" 2>/dev/null || true
+        report_done "Statistics reported successfully."
     fi
-
-    sleep $RETRY_DELAY
     retry_count=$((retry_count + 1))
+    if [ "${retry_count}" -lt "${MAX_RETRIES}" ]; then
+        sleep "${RETRY_DELAY}"
+    fi
 done
 
-echo "Maximum retry attempts reached. Failed to report statistics."
-exit 1
+report_done "Statistics endpoint unreachable, giving up (non-fatal)."
