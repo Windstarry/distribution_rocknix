@@ -23,7 +23,8 @@ unit、未改动 /flash/config.ini、未改动 system.cfg 用户层内容。实�
      GAMES 分区 MBR 类型、report-stats 超时等历史问题均已闭环。
   4. 前端与 GPU 栈的只读对比（现网 ROCKNIX 对照组 + AURKNIX 实机
      复核），形成报告 E:\A311d\gpu_compare\frontend_stack_compare_20261109.txt。
-  5. 本轮仓库改动（见第三节）已落地并通过本地自测。
+  5. 本轮仓库改动（见第三节）已落地、通过本地自测，并已提交
+     c03b9515a7 推送至 origin/a311d。
 
 未完成（阻塞项）：
   1. KERNEL 与 SYSTEM 必须用同一次构建产物一起重刷（第四节第 1 项）。
@@ -165,8 +166,10 @@ sway/essway active 且 NRestarts 低、gpu_dtb 无悬空引用。
   /usr/lib/kernel-overlays/base/lib/modules/ 下的唯一目录名相同。
 
 第 2 步：手动触发 GitHub Actions 构建 a311d 分支
-  本轮改动已推送 origin/a311d（ssh://git@ssh.github.com:443/
-  Windstarry/distribution_rocknix.git）。构建完成后取新镜像，
+  本轮改动已提交 c03b9515a7 并推送 origin/a311d
+  （推送区间 4ac5386858..c03b9515a7；远程
+  ssh://git@ssh.github.com:443/Windstarry/distribution_rocknix.git）。
+  构建完成后取新镜像，
   用 tools/a311d_firmware_verify.py 做刷盘前验收（含
   TC-IMG-16 / TC-USB-09 强制 video 模式检查）。
 
@@ -228,7 +231,9 @@ sway/essway active 且 NRestarts 低、gpu_dtb 无悬空引用。
 
 八、关键数据基线
 
-  分支 / 基线提交 : a311d / 4ac5386858（本轮提交之前的 HEAD）
+  分支 / 基线提交 : a311d / 4ac5386858（本轮之前的 HEAD）
+  本轮提交        : c03b9515a7  已推送 origin/a311d
+                    （4ac5386858..c03b9515a7）
   远程 origin      : ssh://git@ssh.github.com:443/Windstarry/distribution_rocknix.git
   实机 SSH         : 192.168.31.7  root / rocknix
   推荐镜像         : E:\A311d\AURKNIX-image-A311D-20261031\
@@ -246,7 +251,7 @@ sway/essway active 且 NRestarts 低、gpu_dtb 无悬空引用。
 
 九、回滚指引
 
-  代码回滚：在 a311d 分支上 revert 本轮提交，或按需单独还原
+  代码回滚：在 a311d 分支上 revert c03b9515a7，或按需单独还原
   4.1~4.5 的五个文件；基线 4ac5386858 可作为对照。
   实机回滚：保留现有 bootsafe-edidmode 镜像与已格式化的
   GAMES 分区；若新镜像启动异常，重新刷回该镜像即可，
