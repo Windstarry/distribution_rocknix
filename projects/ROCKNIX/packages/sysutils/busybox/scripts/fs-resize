@@ -100,8 +100,14 @@ if [ -e /storage/.please_resize_me ] ; then
           GAME_PART="${DISK}${GAME_PARTNUM}"
           ;;
       esac
-      StartProgress spinner "Creating GAMES partition..." "parted -s -a optimal -m $DISK mkpart primary fat32 ${TARGET_SIZE} 100% >>$LOG 2>&1"
+      # exFAT has no dedicated MBR partition type; Windows uses 0x07 for it.
+      # parted's "ntfs" fs-type is only a partition-table tag - it does NOT
+      # create an NTFS filesystem. Using "fat32" here writes 0x0c, which makes
+      # Windows mount the exFAT volume with its FAT32 driver and report it as
+      # "damaged / not formatted" (confirmed on A311D, 2026-11-09).
+      StartProgress spinner "Creating GAMES partition..." "parted -s -a optimal -m $DISK mkpart primary ntfs ${TARGET_SIZE} 100% >>$LOG 2>&1"
       StartProgress spinner "Formatting GAMES partition as EXFAT..." "mkfs.exfat -n GAMES ${GAME_PART} >>$LOG 2>&1"
+      parted -s -m $DISK print >>$LOG 2>&1
       echo "Created new GAMES partition on ${GAME_PART}" >>$LOG
       rm -f /flash/resize_storage_*
     fi
