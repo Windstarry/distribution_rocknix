@@ -30,14 +30,17 @@ Usage
   python tools/a311d_fat_markers.py --list  <image.img>
   python tools/a311d_fat_markers.py --check <image.img>
   python tools/a311d_fat_markers.py --add   <image.img> --out <new.img>
-  python tools/a311d_fat_markers.py --drive F:
+  python tools/a311d_fat_markers.py --drive F:                     # read-only
+  python tools/a311d_fat_markers.py --drive F: --write --yes      # inject
 
 --add copies the image and injects two ZERO-BYTE files (no cluster
 allocation is needed: fs-resize and init only test for existence).
---drive writes the same two markers directly onto an already mounted FAT
-boot volume; note this does NOT re-run fs-resize on a disk that has already
+--drive is READ-ONLY by default; adding markers requires an explicit
+--write --yes. Note this does NOT re-run fs-resize on a disk that has already
 been expanded (the .please_resize_me trigger is gone and /storage is
 initialised), a reflash is required for the GAMES partition to appear.
+The absence of resize_storage_*G on an already-expanded disk is EXPECTED:
+fs-resize deletes the marker after it has done its job.
 
 Standard library only. All image operations are read-only except --add,
 which always writes to a NEW file.
@@ -285,18 +288,25 @@ def cmd_add(path: str, out: str) -> int:
     return cmd_check(out)
 
 
-def cmd_drive(drive: str) -> int:
+def cmd_drive(drive: str, write: bool = False) -> int:
     root = Path(drive)
     if not root.is_dir():
         raise ValueError("not a mounted directory: %s" % drive)
-    made = []
-    for longname, _short in MARKERS:
-        target = root / longname
-        if target.exists():
-            continue
-        target.write_bytes(b"")  # zero-byte marker, matches mkimage's touch
-        made.append(longname)
+    present = [m[0] for m in MARKERS if (root / m[0]).exists()]
+    missing = [m[0] for m in MARKERS if m[0] not in present]
     print("drive   : %s" % drive)
+    print("markers : present=%s" % (", ".join(present) or "none"))
+    print("          missing=%s" % (", ".join(missing) or "none"))
+    if not write:
+        print("MODE    : read-only, nothing written (add --write --yes to inject)")
+        print("NOTE    : fs-resize deletes resize_storage_*G after a successful")
+        print("          first boot, so a missing marker is EXPECTED on an")
+        print("          already-expanded disk. Do not re-add it.")
+        return 0
+    made = []
+    for longname in missing:
+        (root / longname).write_bytes(b"")  # zero-byte marker, matches mkimage's touch
+        made.append(longname)
     print("added   : %s" % (", ".join(made) if made else "nothing (already present)"))
     print("NOTE    : on an already-expanded disk fs-resize will refuse to run again")
     print("          (trigger removed, /storage initialised). Reflash for the GAMES")
@@ -311,8 +321,12 @@ def main() -> int:
     g.add_argument("--list", metavar="IMG", help="list root files (LFN aware)")
     g.add_argument("--check", metavar="IMG", help="verify markers + P2 trigger")
     g.add_argument("--add", metavar="IMG", help="copy image and inject markers")
-    g.add_argument("--drive", metavar="F:", help="add markers to a mounted FAT volume")
+    g.add_argument("--drive", metavar="F:",
+                   help="inspect markers on a mounted FAT volume (read-only by default)")
     ap.add_argument("--out", metavar="NEW_IMG", help="output for --add")
+    ap.add_argument("--write", action="store_true",
+                    help="with --drive: actually inject missing markers")
+    ap.add_argument("--yes", action="store_true", help="confirm --write")
     args = ap.parse_args()
     try:
         if args.list:
@@ -323,7 +337,9 @@ def main() -> int:
             if not args.out:
                 ap.error("--add requires --out")
             return cmd_add(args.add, args.out)
-        return cmd_drive(args.drive)
+        if args.write and not args.yes:
+            ap.error("--write requires --yes")
+        return cmd_drive(args.drive, write=args.write)
     except Exception as exc:
         print("ERROR: %s" % exc, file=sys.stderr)
         return 1

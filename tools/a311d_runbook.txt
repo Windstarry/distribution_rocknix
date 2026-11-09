@@ -19,7 +19,8 @@ A311D / bootsafe 启动固件  实机检查清单 (Runbook)
            tools/a311d_video_mode.py           (video= 强制模式检查/修复/回滚)
            tools/a311d_dtb_compare.py          (DTB 来源对比/提取/隔离替换)
            tools/a311d_bringup_probe.py       (LAN 端口状态机)
-           tools/a311d_fat_markers.py         (FAT LFN 首启标记)
+           tools/a311d_fat_markers.py         (FAT LFN 首启标记; 默认只读,
+                                              写入必须 --write --yes)
            tools/a311d_games_partition_check.py (首启三分区/exFAT 只读验收)
            均仅用 Python 3 标准库
 记录方式 : 每项写 PASS / FAIL / 实测值; 任一 FAIL 立即停止后续上电动作
@@ -70,7 +71,7 @@ A311D / bootsafe 启动固件  实机检查清单 (Runbook)
   失败: TC-USB-06 出现 cfgload_env / device_trees / config.ini / kernel.img.md5
         -> 刷的是 CI 旧引导链 (黑屏版), 回到 1.2 重刷;
         TC-USB-08 FAIL -> 缺 resize_storage_10G / ms_unsupported, 用
-        python tools/a311d_fat_markers.py --drive F: 补 (仅未扩容盘有效);
+        python tools/a311d_fat_markers.py --drive F: --write --yes 补 (仅未扩容盘有效);
         TC-USB-09 FAIL -> 盘上仍是 1920x1080@60 强制模式, 用
         python tools/a311d_video_mode.py --drive F: --mode D --yes 现场修 (5.10)
   工具修订 (2026-11-09): TC-USB-06 曾把 ms_unsupported 误列为 CI 残留,
@@ -88,7 +89,7 @@ A311D / bootsafe 启动固件  实机检查清单 (Runbook)
         ms_unsupported -> 预期 P2 扩到 10 GiB, 剩余空间建 exFAT GAMES (3 分区)
   旧行为: 无 resize_storage_*G -> P2 扩到 U 盘 100%, 不建 GAMES (2 分区, 已废弃)
   可选 (仅在盘未扩容时): python a311d_firmware_verify.py --drive F: --fix-markers --yes
-        或 python tools/a311d_fat_markers.py --drive F: 补两个 0 字节标记
+        或 python tools/a311d_fat_markers.py --drive F: --write --yes 补两个 0 字节标记
   通过: 已确认 1.3 的 TC-USB-08 PASS 并写入记录
   失败: 未确认就上电, 事后发现分区布局与预期不符 -> 重刷, 不要手动改分区
   说明: GAMES 卷标与 EE 的 EEROMS 不同, 不兼容"第三分区跟 EE 通用"的旧做法
@@ -318,7 +319,7 @@ A311D / bootsafe 启动固件  实机检查清单 (Runbook)
            sha256 c9a659480cd7bdadc06e9a8f79634632c1db7eee09c86e78900ee88bc021ff4f
         ③ 自行生成: python tools/make_a311d_bootable.py --aurknix ... \
            --reference ... --output ... (默认自动注入两个标记)
-        ④ 只给现有盘补标记: python tools/a311d_fat_markers.py --drive F:
+        ④ 只给现有盘补标记: python tools/a311d_fat_markers.py --drive F: --write --yes
            仅对未扩容盘有效; ms_unsupported 对 OTA 立即生效
   验证: python tools/a311d_firmware_verify.py --image <修复版镜像>
         -> TC-IMG-12 / TC-IMG-15 均 PASS, RESULT: PASS
