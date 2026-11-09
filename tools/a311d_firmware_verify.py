@@ -24,6 +24,7 @@ Usage
   python a311d_firmware_verify.py                          # image only, auto paths
   python a311d_firmware_verify.py --drive H:              # image + flashed USB
   python a311d_firmware_verify.py --drive H: --json report.json
+  python a311d_firmware_verify.py --drive H: --raw-disk 2  # also check physical MBR (admin)
   python a311d_firmware_verify.py --drive H: --fix-markers --yes
 
 Exit codes: 0 = no FAIL, 1 = at least one FAIL, 2 = usage/IO error.
@@ -38,7 +39,7 @@ import sys
 
 SECTOR = 512
 DEFAULT_DIR = r"E:\A311d\AURKNIX-image-A311D-20261031"
-DEF_IMAGE = os.path.join(DEFAULT_DIR, "AURKNIX-A311D.aarch64-20261109-bootsafe.img")
+DEF_IMAGE = os.path.join(DEFAULT_DIR, "AURKNIX-A311D.aarch64-20261109-bootsafe-markers.img")
 DEF_REFERENCE = os.path.join(DEFAULT_DIR, "ROCKNIX-S922X-BOX.aarch64-20261108.img")
 DEF_AURKNIX = os.path.join(DEFAULT_DIR, "AURKNIX-A311D.aarch64-20261031.img")
 
@@ -72,8 +73,10 @@ CHECKS = [
     ("TC-USB-03", "usb", "flashed files byte-identical to image", "md5+size SAME for 6 files"),
     ("TC-USB-04", "usb", "flashed kernel.img header", "same cmdline as image"),
     ("TC-USB-05", "usb", "flashed dtb.img", "d00dfeed + cainiao"),
-    ("TC-USB-06", "usb", "no CI-chain leftovers", "no cfgload_env / device_trees / config.ini"),
+    ("TC-USB-06", "usb", "no CI-chain leftovers", "no cfgload_env / device_trees / config.ini / kernel.img.md5"),
     ("TC-USB-07", "usb", "raw MBR (--raw-disk N)", "P1 LBA/type == image MBR"),
+    ("TC-USB-08", "usb", "first-boot markers on USB",
+     "resize_storage_*G AND ms_unsupported both present (TC-IMG-12/15)"),
 ]
 
 
@@ -537,10 +540,22 @@ def check_drive(args, rep, baseline):
     else:
         rep.add("TC-USB-05", "SKIP", "dtb.img missing")
 
+    # NOTE: ms_unsupported used to be listed here as a "CI chain leftover".
+    # That was wrong: it is a deliberate first-boot marker (init:838 OTA path)
+    # and TC-IMG-15 requires it to be present. Keep only genuine CI-chain
+    # leftovers in this blacklist; assert the markers separately in TC-USB-08.
     leftovers = [n for n in names if n.lower() in
-                 ("cfgload_env", "device_trees", "config.ini", "kernel.img.md5", "ms_unsupported")]
+                 ("cfgload_env", "device_trees", "config.ini", "kernel.img.md5")]
     rep.add("TC-USB-06", "FAIL" if leftovers else "PASS", "leftovers=%s" % (leftovers or "none"),
             "presence means the CI (black-screen) chain was flashed instead")
+
+    lower_names = [n.lower() for n in names]
+    resize_markers = [n for n in names if re.match(r"resize_storage_\d+G", n, re.I)]
+    ms_marker = "ms_unsupported" in lower_names
+    markers_ok = bool(resize_markers) and ms_marker
+    rep.add("TC-USB-08", "PASS" if markers_ok else "FAIL",
+            "resize_markers=%s ms_unsupported=%s" % (resize_markers or "none", ms_marker),
+            "without resize_storage_*G fs-resize grows STORAGE to 100% and skips the exFAT GAMES partition")
 
     if args.raw_disk is not None:
         raw = r"\\.\PhysicalDrive%d" % args.raw_disk
