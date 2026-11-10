@@ -17,9 +17,12 @@ A311D 刷盘前离线镜像核查（只读，纯标准库，无外部依赖）�
   T7  SYSTEM squashfs 头有效 (hsqs)
   T8  KERNEL.IMG 内嵌内核版本字符串（Android boot image）
   T9  .gz 自身 sha256 与同目录 .sha256 清单一致（存在时）
-  T10 启动 label 一致性（FAT32 卷标 / cfgload / cfgload_env /
-      kernel.img Android header cmdline）；--expect-label 时对照已验证基线
-      （A311D 用 ROCKNIX）：不一致即 FAIL，避免 initramfs 挂不上 /flash
+  T10 启动 label 一致性（FAT32 BPB 卷标 / FAT32 根目录卷标项 / cfgload /
+      cfgload_env / kernel.img Android header cmdline）；--expect-label 时
+      对照已验证基线（A311D 用 ROCKNIX）：不一致即 FAIL，避免 initramfs
+      挂不上 /flash
+  T10d BPB 卷标与根目录卷标项必须一致：Windows SetVolumeLabelW 只改
+      根目录项，Linux blkid 读 BPB，"半改"卷标仍会黑屏
 
 输出逐项 PASS/FAIL/WARN/SKIP 与总结论；存在 FAIL 时退出码为 1。
 工具只做静态离线检查，不替代板级启动验证。
@@ -294,6 +297,21 @@ def verify(path, expect_label=None):
     labels = {}
     bpb = reader.read_at(fat.start_lba * fat.bps + 71, 11)
     labels["FAT32 BPB"] = bpb.decode("ascii", "replace").strip() or "(空)"
+    # The root-directory volume label entry (attr 0x08) is a SECOND label.
+    # Windows SetVolumeLabelW updates only this entry, while Linux blkid
+    # reads the BPB.  Both must match.
+    root_label = "(无)"
+    root_raw = fat.chain_bytes(fat.root, 512)
+    i = 0
+    while i + 32 <= len(root_raw):
+        e = root_raw[i:i + 32]
+        i += 32
+        if e[0] == 0x00:
+            break
+        if e[11] == 0x08:
+            root_label = e[0:11].decode("ascii", "replace").strip() or "(空)"
+            break
+    labels["FAT32 根目录项"] = root_label
     for key in ("cfgload", "cfgload_env"):
         if key in files:
             txt = fat.chain_bytes(*files[key]).decode("ascii", "replace")
@@ -306,12 +324,18 @@ def verify(path, expect_label=None):
         labels["kernel.img cmdline"] = m.group(1) if m else "(空)"
     for k, v in labels.items():
         print("        %-22s %s" % (k, v))
-    known = set(v for v in labels.values() if v not in ("(空)", "(未找到)"))
+    unknown = ("(空)", "(未找到)", "(无)")
+    known = set(v for v in labels.values() if v not in unknown)
     rep.add("T10", len(known) <= 1, "启动 label 内部一致",
             "取值=%s" % (",".join(sorted(known)) or "无"))
+    rep.add("T10d",
+            labels["FAT32 BPB"] == labels["FAT32 根目录项"],
+            "BPB 与根目录卷标项一致",
+            "BPB=%s 目录项=%s" % (labels["FAT32 BPB"],
+                                  labels["FAT32 根目录项"]))
     if expect_label:
         bad = [k for k, v in labels.items()
-               if v not in ("(空)", "(未找到)") and v.upper() != expect_label.upper()]
+               if v not in unknown and v.upper() != expect_label.upper()]
         rep.add("T10b", not bad, "启动 label 符合基线 %s" % expect_label,
                 "不符项=%s" % (",".join(bad) or "无"))
     if labels.get("kernel.img cmdline") == "(空)":
