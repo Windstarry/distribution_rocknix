@@ -669,3 +669,159 @@ sway/essway active 且 NRestarts 低、gpu_dtb 无悬空引用。
    - 设备 eMMC U-Boot env 的实际 bootargs 仍未用串口读取；若实机仍报
      找不到 LABEL，串口执行 env default -a; saveenv 清旧 env 后再试。
 ================================================================================
+
+补记八（2026-11-10 21:50，北京时间）：活体对比确认根因不是卷标，
+而是启动链 / DTB 与设备 U-Boot env 不配套
+================================================================================
+0. 结论（推翻补记六、补记七的"卷标不一致"归因）
+   用户把能进系统的 ROCKNIX 盘上机（192.168.31.7，root/rocknix），
+   我方 SSH 只读取到活体基线。设备 /proc/cmdline 就是
+   boot=LABEL=ROCKNIX，而 F 盘的 BPB 卷标、根目录卷标项、cfgload、
+   cfgload_env、kernel.img header cmdline 也全部是 ROCKNIX（补记七已修）。
+   两侧完全一致却仍报 "Unable to find LABEL=ROCKNIX"，因此卷标不是根因。
+   真正差异在启动链与 DTB：20261110 把内核换成 6.18.21 + 外部 ramdisk、
+   U-Boot 脚本换成 cfgload/ceboot 新链、DTB 换成 80,688 B 自编版本，
+   而设备 eMMC 里的 U-Boot env 仍是现网 aml_autoscript saveenv 写入的旧链。
+   现已把 F 盘启动链三件套替换为实机验证版本；**未做板级验证**。
+
+1. 活体基线（只读采集，来源 192.168.31.7）
+   1.1 系统：ROCKNIX 20261108 / community / next，uname
+       "Linux S922X-BOX 6.18.49 #1 SMP PREEMPT Sun Nov 8 20:02:56 CST 2026"
+   1.2 /proc/cmdline（重复两遍，中间夹 bootfromusb）：
+       boot=LABEL=ROCKNIX disk=LABEL=STORAGE console=ttyAML0,115200n8
+       console=tty0 no_console_suspend net.ifnames=0
+       video=HDMI-A-1:1920x1080@60 systemd.debug_shell=ttyAML0
+       bootfromusb + 同一串再出现一次
+       -> 内核确实按 LABEL=ROCKNIX 找 /flash；屏幕报错与之一致。
+   1.3 blkid：
+       /dev/sda1 LABEL="ROCKNIX" TYPE="vfat" UUID=0811-0630
+       /dev/sda2 LABEL="STORAGE" TYPE="ext4"
+       /dev/sda3 LABEL="EEROMS"  TYPE="exfat"
+       /dev/disk/by-label/ROCKNIX -> ../../sda1（/flash 挂 /dev/sda1）
+       /dev/mmcblk1 = 14.6 GiB eMMC，无分区标签
+   1.4 启动盘是 JMicron JMS583 NVMe USB3.2 硬盘盒（128 GB，走 uas）：
+       dmesg 里 xhci/dwc3/usb-storage/uas 在 1.5~2.7 s 注册，
+       usb 1-1 集线器 3.1 s、NVME 设备 3.7 s、/dev/sda 在 5.86 s 出现，
+       "Checking disk(s)" 在 3.06 s。initramfs 的 15 次×1 秒重试够用。
+   1.5 /proc/config.gz（6.18.49）关键项，全部内建 =y：
+       CONFIG_INITRAMFS_SOURCE=<构建目录>/initramfs
+       CONFIG_INITRAMFS_COMPRESSION_LZO=y、CONFIG_DEVTMPFS_MOUNT=y
+       CONFIG_USB_XHCI_HCD=y、CONFIG_USB_STORAGE=y、CONFIG_USB_UAS=y
+       CONFIG_USB_DWC3=y、CONFIG_USB_DWC3_MESON_G12A=y
+       CONFIG_USB_DWC2=y、CONFIG_SCSI=y、CONFIG_BLK_DEV_SD=y
+
+2. 现网启动链（已下载到 live_ref_20261110/，作为实机基线）
+   cfgload        508 B   uImage 脚本，dcrc=0x8498BC0D hcrc=0xF62138B3
+       if fatload mmc 0:1 0x01000000 dtb.img; then setenv dtb_mem_addr ...; fi
+       setenv bootargs 'boot=LABEL=ROCKNIX ... video=HDMI-A-1:1920x1080@60 ...'
+       if fatload mmc 0:1 0x01080000 kernel.img; then bootm 0x01080000; fi
+       if fatload mmc 0:1 0x01100000 kernel2.img; then bootm ...; fi
+   aml_autoscript 1466 B
+       cfgloadusb  = fatload usb 0:1 cfgload -> autoscr
+       bootfromusb = 'usb start 0; run cfgloadusb; if fatload usb 0
+                      ${loadaddr} kernel.img; then run usbdtb;
+                      setenv bootargs ${bootargs} bootfromusb; bootm; fi'
+       saveenv; run storeargs; run bootfromsd; run bootfromusb; run bootfromemmc
+   dtb.img       54,984 B  md5=0fee9ffd2a2f3cb4a891b71176e3ee6a
+       /soc/gpu@ffe40000 = bifrost，status 缺省（FDT 语义即 okay）
+       无 midgard 节点；USB/PHY 节点齐全
+   kernel.img    14,215,168 B，ANDROID! header
+       kernel_size=14,211,441  ramdisk_size=0（initramfs 内建在内核里）
+       cmdline 为 1.2 那串完整参数
+
+3. 20261110 构建与基线的差异（离线逐项实测）
+   项目            能进系统（现网 / bootsafe）   20261110（黑屏）
+   内核            6.18.49，ramdisk_size=0      6.18.21，ramdisk_size=7,346,176
+   kernel.img      14,215,168 B                 18,567,168 B
+   cfgload         497 / 508 B，直接 bootm     3012 B，设 rootopt 后交 ceboot
+   cfgload_env     不存在                      3078 B，ceboot 里 fatload 新 DTB
+                                              到 dtb_mem_addr 再 bootm
+   aml_autoscript  1466 B，bootfromusb 自带    1382 B，bootfromusb 只
+                   fatload kernel.img + bootm  'usb start; if usb storage;
+                                               then run cfgloadusb; fi'
+   dtb.img         54,984 B（实机 DTB）        80,688 B（cainiao DTS）
+   bootsafe 可进系统镜像（20261109）同样是 ramdisk_size=0 / cfgload 497 B /
+   aml_autoscript 1466 B / dtb.img 54,984 B，进一步佐证"能进系统"的
+   共同特征是旧启动链，而不是卷标。
+
+3.1 两份 DTB 的 USB 相关属性差异（不是只有 GPU 节点不同）：
+   /regulator-usb-pwr   现网 gpio phandle=0x4E、vin-supply=0x54；
+                        新   gpio phandle=0x51、vin-supply=0x4E，
+                        且新增 regulator-min/max-microvolt = 5,000,000
+   /regulator-usb-switch 新同样新增 5V 固定约束、vin-supply 指向不同
+   /soc/usb@ffe09000 及 usb@ff400000 / ff500000 的 phandle 编号不同
+   USB 控制器节点路径、compatible、status 两者一致；但供电 regulator
+   约束的变化足以影响内核阶段 USB VBUS，U-Boot 阶段不受影响。
+
+4. 根因判定
+   4.1 报错原文来自 AURKNIX ramdisk 内 init 的 mount_common（119-136 行）：
+       mount -o ro,noatime LABEL=ROCKNIX /flash，重试 15 次每次 1 秒，
+       仍失败则打印 "Unable to find $1, powering off and on should
+       correct it."，倒计时 3 秒后 poweroff。屏幕 "Power off in 3s... 2"
+       即关机倒计时，不是显示驱动问题。
+   4.2 卷标链路（补记六、七的全部修复）已自洽，故失败点在
+       "内核阶段看不到 U 盘分区"：/dev 里没有 sda 或 blkid 扫不到标签。
+   4.3 触发条件：设备 U-Boot env 是现网旧链 saveenv 的结果；20261110 的
+       ceboot 显式把 80,688 B 自编 DTB 载入 dtb_mem_addr 后 bootm，
+       与旧链行为不同；叠加 6.18.21 + 外部 ramdisk（现网是内建
+       initramfs）与 USB regulator 属性变化。
+   4.4 未能离线确认的一点：6.18.21 内核的 IKCONFIG 段在 LZO 压缩流中
+       （IKCFG_ST @8,402,759，后随字节非标准 gzip），本机无 lzo 解压
+       工具，未能读出 USB 驱动是 =y 还是 =m。列为实机待验证项，
+       不写成结论。
+
+5. 已执行的修复（全部保留 kernel.img / SYSTEM / 卷标）
+   5.1 F 盘（启动盘）三件套替换为实机基线：
+       cfgload 3012 -> 508 B、aml_autoscript 1382 -> 1466 B、
+       dtb.img 80,688 -> 54,984 B；uImage CRC 复核自洽；
+       卷标 ROCKNIX 不变；kernel.img 18,567,168 B 与 SYSTEM 未动。
+       备份：boot_backup_20261110/f_drive_livefix_2145/
+   5.2 产出可直接刷盘的
+       AURKNIX-A311D.aarch64-20261110-livefixed.img（2,198,863,872 B）、
+       .img.gz（1,339,808,353 B）、.img.gz.sha256
+       sha256 = a3d32edad23f0f5dcaefa0456334224a5e3dd611f45ea8e9f10a504d1bc4f0eb
+       由 -bootfixed.img 复制后原地替换三件套生成；FAT32 目录项 size
+       与簇内容同步更新，kernel.img.md5 / system.md5 不变。
+       备份：boot_backup_20261110/image_livefixed_orig/
+   5.3 新工具 tools/a311d_restore_boot_chain.py：把实机基线三件套
+       写回 .img 或已挂载卷，支持 --scan / --dry-run / --backup，
+       自动处理 FAT32 LFN、目录项 size 与簇容量；已实跑复核 SAME。
+   5.4 核查工具 tools/a311d_image_verify.py 修正：
+       T3 兼容 FDT 规范（status 缺省即 okay），不再把现网可用 DTB
+       误判 FAIL；T5 兼容现网 fatload 与新链 setenv dtbfile 两种写法；
+       新增 T5b（不引用不存在的 DTB 变体）、T11 + --ref-chain
+       （三件套与实机基线逐字节一致）。
+       实测：livefixed.img 加 --expect-label ROCKNIX --ref-chain
+       <live_ref_20261110> 全 PASS 退出码 0；原 20261110 镜像同命令
+       FAIL（T11 三件套偏离、T10b 卷标 AURKNIX）退出码 1。
+
+6. 用户下一步（按优先级）
+   6.1 最快：安全弹出 F 盘，插回设备上电。期望不再出现
+       "Unable to find LABEL"，能进前端。起来后按补记五第 4 节做
+       UI_SERVICE / gpu.driver / uname -r 与模块 vermagic / /dev/dri 验收。
+   6.2 若要用另一个 U 盘：刷 -livefixed.img.gz，或插回电脑执行
+       python3 tools/a311d_restore_boot_chain.py --scan
+       python3 tools/a311d_restore_boot_chain.py \
+           --ref <live_ref_20261110> --target X: --backup <备份目录>
+   6.3 刷盘前一律先跑
+       python3 tools/a311d_image_verify.py <镜像>.img \
+           --expect-label ROCKNIX --ref-chain <live_ref_20261110>
+
+7. B 方案（若第 6 步仍失败）
+   直接刷最后一次可进系统的
+   AURKNIX-A311D.aarch64-20261109-bootsafe-edidmode.img。
+   这说明 6.18.21 + 外部 ramdisk 这个变量本身与设备不兼容，
+   只换 U-Boot 脚本/DTB 不够；需要在源码层把 A311D 启动链恢复为
+   S922X-BOX 简版并让 kernel.img 回到内建 initramfs 方式，
+   再干净重建。此项列为下一轮任务，本轮未改构建脚本。
+
+8. 未验证 / 风险
+   - 本轮只有离线对比与盘级修复，**未做板级上电验证**，不得写"已通过"。
+   - 设备 eMMC U-Boot env 未用串口读取；其值由现网 aml_autoscript 的
+     saveenv 行为与 /proc/cmdline 反推，置信度高但非直接观测。
+   - 现网 54,984 B DTB 与 6.18.21 内核的兼容性未实机确认；
+     该 DTB 的 bifrost 节点启用、无 midgard，符合此前 GPU 目标。
+   - 镜像内 device_trees/ 仍是 80,688 B 的 cainiao DTB，
+     config.ini / cfgload_env 仍在盘上；现网启动链不引用它们，无害。
+   - 6.18.21 内核 USB 驱动是否内建未能离线确认（见 4.4）。
+================================================================================

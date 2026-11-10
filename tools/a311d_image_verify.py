@@ -4,15 +4,20 @@
 A311D 刷盘前离线镜像核查（只读，纯标准库，无外部依赖）。
 
 用法:
-  python3 tools/a311d_image_verify.py <image.img|image.img.gz> [--expect-label <LABEL>]
-  # A311D 刷盘前建议: --expect-label ROCKNIX（设备 U-Boot env 基线）
+  python3 tools/a311d_image_verify.py <image.img|image.img.gz> \
+      [--expect-label <LABEL>] [--ref-chain <已验证基线目录>]
+  # A311D 刷盘前建议:
+  #   --expect-label ROCKNIX
+  #   --ref-chain E:/A311d/AURKNIX-image-A311D-20261031/live_ref_20261110
 
 检查项:
   T1  MBR / FAT32 启动分区可读
   T2  必需文件齐全 (KERNEL.IMG, SYSTEM, DTB.IMG, CONFIG.INI, CFGLOAD)
-  T3  DTB GPU 节点: arm,mali-bifrost 必须 okay；arm,mali-midgard 若存在须 disabled
+  T3  DTB GPU 节点: arm,mali-bifrost 必须启用（status 缺省按 FDT 规范即 okay）；
+      arm,mali-midgard 若存在须 disabled
   T4  CONFIG.INI 未启用悬空 gpu_dtb（本树不产出 dtb-panfrost.img）
-  T5  CFGLOAD 默认 dtbfile=dtb.img
+  T5  CFGLOAD 引用 dtb.img（兼容现网 fatload 与新链 setenv dtbfile 两种写法）
+  T5b CFGLOAD 未引用镜像里不存在的 DTB 变体
   T6  KERNEL.IMG / SYSTEM 与镜像内附 .md5 清单一致（仅 .img；.gz 跳过）
   T7  SYSTEM squashfs 头有效 (hsqs)
   T8  KERNEL.IMG 内嵌内核版本字符串（Android boot image）
@@ -23,6 +28,9 @@ A311D 刷盘前离线镜像核查（只读，纯标准库，无外部依赖）�
       挂不上 /flash
   T10d BPB 卷标与根目录卷标项必须一致：Windows SetVolumeLabelW 只改
       根目录项，Linux blkid 读 BPB，"半改"卷标仍会黑屏
+  T11 启动链三件套（cfgload / aml_autoscript / dtb.img）与 --ref-chain
+      指定的实机已验证基线逐字节一致；未提供时 SKIP。前三轮黑屏的
+      真正根因都在启动链/DTB 与设备 U-Boot env 不配套，故此项最关键
 
 输出逐项 PASS/FAIL/WARN/SKIP 与总结论；存在 FAIL 时退出码为 1。
 工具只做静态离线检查，不替代板级启动验证。
@@ -189,13 +197,21 @@ class Report:
         return any(s == "FAIL" for _, s, _, _ in self.items)
 
 
+def node_enabled(n):
+    """FDT 语义：status 缺省即 okay（现网可用 DTB 就是这种写法）。"""
+    s = fdt.status_of(n).strip().lower()
+    return s == "okay" or "absent" in s or "默认" in s or s == ""
+
+
 def check_dtb(data, rep):
     root = fdt.parse_fdt(data)
     nodes = fdt.walk(root)
     bifrost = [(p, n) for p, n in nodes if "bifrost" in fdt.compat_of(n).lower()]
     midgard = [(p, n) for p, n in nodes if "midgard" in fdt.compat_of(n).lower()]
-    bif_ok = bool(bifrost) and all(fdt.status_of(n).strip() == "okay" for _, n in bifrost)
-    detail = "bifrost=%d(okay=%s), midgard=%d" % (
+    # 现网可用 DTB 的 bifrost 节点不带 status 属性；按 FDT 规范视为 okay。
+    # 之前只认明文 "okay"，把已实机验证的基线误判为 FAIL。
+    bif_ok = bool(bifrost) and all(node_enabled(n) for _, n in bifrost)
+    detail = "bifrost=%d(enabled=%s), midgard=%d" % (
         len(bifrost), bif_ok, len(midgard))
     rep.add("T3", bif_ok, "DTB bifrost 节点已启用", detail)
     if midgard:
@@ -216,7 +232,7 @@ def sha256_of(path):
     return h.hexdigest()
 
 
-def verify(path, expect_label=None):
+def verify(path, expect_label=None, ref_chain=None):
     is_gz = path.lower().endswith(".gz")
     print("=" * 76)
     print("镜像: %s" % path)
@@ -249,7 +265,42 @@ def verify(path, expect_label=None):
             "启用行=%s" % (active or "无"))
 
     load = fat.chain_bytes(*files["cfgload"]).decode("ascii", "replace")
-    rep.add("T5", 'setenv dtbfile "dtb.img"' in load, "CFGLOAD 默认加载 dtb.img")
+    # 两种已验证写法都算合法：
+    #   现网 cfgload: fatload ... dtb.img / setenv dtb_mem_addr
+    #   新链 cfgload: setenv dtbfile "dtb.img"
+    # 但不得引用镜像里不存在的 DTB 变体（如 dtb-panfrost.img）。
+    has_dtb_ref = ("dtb.img" in load and
+                   ("dtbfile" in load or "fatload" in load or
+                    "dtb_mem_addr" in load))
+    rep.add("T5", has_dtb_ref, "CFGLOAD 引用 dtb.img",
+            "dtbfile/fatload/dtb_mem_addr 命中=%s" % has_dtb_ref)
+    dtb_refs = set(x.lower() for x in re.findall(r"[A-Za-z0-9_.-]*dtb[A-Za-z0-9_.-]*\.img", load))
+    dangling = sorted(r for r in dtb_refs if r not in files and r != "dtb.img")
+    rep.add("T5b", not dangling, "CFGLOAD 未引用不存在的 DTB 变体",
+            "悬空引用=%s" % (",".join(dangling) or "无"))
+
+    # T11 启动链与实机基线的逐字节一致性（可选，但强烈建议 A311D 使用）。
+    # 前三轮黑屏故障的根因都不是卷标，而是启动链/DTB 与设备 U-Boot env
+    # 不配套；提供 --ref-chain 时，任何偏离已验证基线的改动都判 FAIL。
+    if ref_chain:
+        bad = []
+        for name in ("cfgload", "aml_autoscript", "dtb.img"):
+            p = os.path.join(ref_chain, name)
+            if not os.path.isfile(p):
+                bad.append(name + "(参考缺失)")
+                continue
+            want = open(p, "rb").read()
+            if name not in files:
+                bad.append(name + "(镜像缺失)")
+                continue
+            got = fat.chain_bytes(*files[name])
+            if got != want:
+                bad.append("%s(%d->%d B)" % (name, len(got), len(want)))
+        rep.add("T11", not bad, "启动链与实机基线一致",
+                "偏离项=%s" % (",".join(bad) or "无"))
+    else:
+        rep.skip("T11", "启动链与实机基线一致",
+                 "未提供 --ref-chain；A311D 建议用现网可用基线目录")
 
     if is_gz:
         rep.skip("T6", "KERNEL/SYSTEM md5 清单校验",
@@ -354,6 +405,7 @@ def verify(path, expect_label=None):
 def main():
     args = sys.argv[1:]
     expect_label = None
+    ref_chain = None
     if "--expect-label" in args:
         i = args.index("--expect-label")
         if i + 1 >= len(args):
@@ -361,15 +413,23 @@ def main():
             return 2
         expect_label = args[i + 1]
         del args[i:i + 2]
+    if "--ref-chain" in args:
+        i = args.index("--ref-chain")
+        if i + 1 >= len(args):
+            print("--ref-chain 缺少参数值")
+            return 2
+        ref_chain = args[i + 1]
+        del args[i:i + 2]
     if len(args) != 1:
         print("用法: python3 tools/a311d_image_verify.py "
-              "<image.img|image.img.gz> [--expect-label <LABEL>]")
+              "<image.img|image.img.gz> [--expect-label <LABEL>] "
+              "[--ref-chain <已验证基线目录>]")
         return 2
     path = args[0]
     if not os.path.isfile(path):
         print("文件不存在: %s" % path)
         return 2
-    rep, _, _ = verify(path, expect_label)
+    rep, _, _ = verify(path, expect_label, ref_chain)
     print("=" * 76)
     if rep.failed():
         print("结论: FAIL —— 存在阻塞项，禁止刷盘。")
