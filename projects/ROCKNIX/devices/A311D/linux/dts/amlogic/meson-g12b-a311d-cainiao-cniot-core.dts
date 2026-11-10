@@ -27,11 +27,13 @@
  *
  * Board-specific policies kept from P1 (differ from the armbian/batocera
  * reference):
- *  - GPU stack: "mali_vulkan" (arm,mali-midgard) is the vendor DDK
- *    (mali_kbase) node used by the default libmali stack; the panfrost
- *    node "mali" is kept but disabled. meson-g12b-a311d-cainiao-cniot-core-
- *    panfrost.dts flips them. The live DTB instead leaves panfrost at its
- *    dtsi default (okay) and has no vendor DDK node.
+ *  - GPU stack: this board can ONLY bring up the frontend with the
+ *    panfrost (Mesa) stack, not the vendor libmali/mali_kbase DDK
+ *    (verified on hardware: libmali fails to start the frontend). Hence
+ *    the default dtb.img enables the panfrost "mali" (bifrost) node and
+ *    disables the vendor "mali_vulkan" (midgard) node. The *-panfrost.dts
+ *    variant referenced elsewhere does NOT exist in this tree, so the
+ *    single dtb.img must be panfrost-ready.
  *  - main_12v / vddao_1v8 / vsys_3v3 supply naming (the reference calls
  *    the 12V rail dc_in); electrically equivalent.
  *  - adc-keys recovery button maps to KEY_POWER @ 17000uV.
@@ -371,13 +373,16 @@
 		#cooling-cells = <2>;
 		system-coherency = <0>;
 		power_policy = "always_on";
-		status = "okay";
+		status = "disabled";
 	};
 };
 
-/* Panfrost node: kept disabled, enabled by the *-panfrost dtb variant */
+/* Panfrost (bifrost) node: this board runs the panfrost/Mesa stack, so the
+   vendor DDK node above is disabled and this one is enabled by default.
+   No *-panfrost dtb variant is produced, so the single dtb.img must be
+   panfrost-ready. */
 &mali {
-	status = "disabled";
+	status = "okay";
 };
 
 /*

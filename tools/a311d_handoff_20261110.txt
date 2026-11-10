@@ -264,3 +264,45 @@ sway/essway active 且 NRestarts 低、gpu_dtb 无悬空引用。
 文档结束。下一轮接手请先执行第五节第 1 步（配套重刷），
 再用 tools/a311d_gpu_stack_check.py 做一次全量检查。
 ================================================================================
+
+
+补记三（2026-11-10）：20261110 镜像离线检查与 DTB 翻转修复
+============================================================
+1. 镜像位置
+   E://A311d//AURKNIX-image-A311D-20261031//AURKNIX-image-A311D-20261110///n   AURKNIX-A311D.aarch64-20261110.img （约 2.2 GiB）
+
+2. 离线检查结论（纯 Python 解析 .img，未刷盘）
+   2.1 完整性：AURKNIX-A311D.aarch64-20261110.img.gz.sha256 与实测一致
+       （9302395d...80229d），压缩包完整。PASS
+   2.2 引导分区：MBR part0=0x0C FAT32（16MiB 偏移，2GiB）、part1=0x83
+       ext4（STORAGE），与 bootsafe 基线一致；CONFIG.INI 全程无 video=
+       行，USERDEF 黑屏根因已消除。PASS
+   2.3 阻塞问题：DTB 双 GPU 节点状态写反。
+        soc/gpu@ffe40000 = arm,mali-bifrost（panfrost 用）-> status=disabled
+        gpu_mali_vulkan@ffe40000 = arm,mali-midgard（libmali 用）-> status=okay
+       而本机实测只能用 panfrost 起前端（libmali 切过去即起不来）。
+       直接刷此镜像 -> panfrost 绑不上 GPU -> 前端起不来。FAIL（阻塞）
+   2.4 根因：仓库 DTS 设计以 libmali 为默认（mali_vulkan okay、&mali
+       disabled）；注释提到的 *-panfrost.dts 在本树不存在；release 脚本只
+       生成 dtb.img、不生成 dtb-panfrost.img，device_trees/ 仅 niot-core.dtb
+       （同款 bifrost-disabled）。CONFIG.INI 的 gpu_dtb=dtb-panfrost.img
+       指向的文件从未产出。
+
+3. 已修复（源码层，待重建生效）
+   3.1 默认 DTS 翻转 GPU 节点：mali_vulkan -> status="disabled"；
+       &mali -> status="okay"；同步更新文件头注释（本板只能 panfrost）。
+   3.2 bootloader/config.ini 注释同步：dtb.img = panfrost-ready。
+
+4. 待办（用户侧）
+   4.1 手动触发 a311d Actions 重建。
+   4.2 重建后用 tools/a311d_gpu_stack_check.py --live 在实机 SSH 复核：
+       UI_SERVICE="sway.service essway.service"、gpu.driver=panfrost、
+       mali_kbase.ko+libmali 成对、/dev/dri/card1+renderD128 出现、
+       内核 uname -r 与模块目录/vermagic 一致。
+   4.3 首次启动清旧 storage 残留 gpu.driver=libmali（升级 --exclude=configs
+       不自动纠正），或改用 gpudriver 切换；删 /storage/.config/profile.d/
+       999-ui-service 残留。
+
+5. 风险：本轮仅改源码并推送，未实机构建/验证；SYSTEM 内部 UI_SERVICE 与
+   gpu.driver 因本机无 unsquashfs/7z/WSL 无法离线解包确认，依赖上一轮已
+   推送的代码改动 + 重建后实机复核。本轮改动基线提交见下。
