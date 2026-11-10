@@ -27,13 +27,15 @@
  *
  * Board-specific policies kept from P1 (differ from the armbian/batocera
  * reference):
- *  - GPU stack: this board can ONLY bring up the frontend with the
- *    panfrost (Mesa) stack, not the vendor libmali/mali_kbase DDK
- *    (verified on hardware: libmali fails to start the frontend). Hence
- *    the default dtb.img enables the panfrost "mali" (bifrost) node and
- *    disables the vendor "mali_vulkan" (midgard) node. The *-panfrost.dts
- *    variant referenced elsewhere does NOT exist in this tree, so the
- *    single dtb.img must be panfrost-ready.
+ *  - GPU nodes: A311D is a Bifrost G52. Both panfrost (Mesa) and the
+ *    vendor Mali DDK (mali_kbase.ko + libmali) bind to the SAME
+ *    arm,mali-bifrost node, so that node MUST be enabled. The separate
+ *    "mali_vulkan" (arm,mali-midgard) node is the WRONG architecture for
+ *    this SoC and is disabled. (The earlier "libmali fails to start the
+ *    frontend" observation was a software/config issue, not a hardware
+ *    limit; libmali remains a selectable alternate stack.) No *-panfrost.dts
+ *    variant exists in this tree, so the single dtb.img must be
+ *    bifrost-enabled.
  *  - main_12v / vddao_1v8 / vsys_3v3 supply naming (the reference calls
  *    the 12V rail dc_in); electrically equivalent.
  *  - adc-keys recovery button maps to KEY_POWER @ 17000uV.
@@ -377,10 +379,12 @@
 	};
 };
 
-/* Panfrost (bifrost) node: this board runs the panfrost/Mesa stack, so the
-   vendor DDK node above is disabled and this one is enabled by default.
-   No *-panfrost dtb variant is produced, so the single dtb.img must be
-   panfrost-ready. */
+/* Bifrost (arm,mali-bifrost) node. A311D is Bifrost G52, so this node is
+   required by BOTH panfrost (Mesa) and the vendor Mali DDK (mali_kbase.ko
+   + libmali) — both probe arm,mali-bifrost. Must stay enabled. The
+   mali_vulkan (arm,mali-midgard) node above is disabled because Midgard is
+   the wrong architecture for this SoC. No *-panfrost dtb variant exists, so
+   this single dtb.img is the bifrost-enabled one. */
 &mali {
 	status = "okay";
 };

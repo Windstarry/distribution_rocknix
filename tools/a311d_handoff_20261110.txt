@@ -281,7 +281,11 @@ sway/essway active 且 NRestarts 低、gpu_dtb 无悬空引用。
         soc/gpu@ffe40000 = arm,mali-bifrost（panfrost 用）-> status=disabled
         gpu_mali_vulkan@ffe40000 = arm,mali-midgard（libmali 用）-> status=okay
        而本机实测只能用 panfrost 起前端（libmali 切过去即起不来）。
-       直接刷此镜像 -> panfrost 绑不上 GPU -> 前端起不来。FAIL（阻塞）
+       —— 上句"只能 panfrost"的归因有误（见补记四）：A311D 是 Bifrost，
+          libmali(mali_kbase) 与 panfrost 绑的是同一 arm,mali-bifrost 节点，
+          那次 libmali 失败是配置/软件问题，非硬件上限。但"镜像 bifrost
+          节点 disabled"这一症状属实，故直接刷此镜像 -> 任一栈都绑不上 GPU
+          -> 前端起不来。FAIL（阻塞）
    2.4 根因：仓库 DTS 设计以 libmali 为默认（mali_vulkan okay、&mali
        disabled）；注释提到的 *-panfrost.dts 在本树不存在；release 脚本只
        生成 dtb.img、不生成 dtb-panfrost.img，device_trees/ 仅 niot-core.dtb
@@ -290,7 +294,9 @@ sway/essway active 且 NRestarts 低、gpu_dtb 无悬空引用。
 
 3. 已修复（源码层，待重建生效）
    3.1 默认 DTS 翻转 GPU 节点：mali_vulkan -> status="disabled"；
-       &mali -> status="okay"；同步更新文件头注释（本板只能 panfrost）。
+       &mali -> status="okay"；同步更新文件头与 &mali 注释（说明 A311D 为
+       Bifrost，bifrost 节点为 panfrost 与 libmali 双栈共用、必须 enabled，
+       原"本板只能 panfrost"表述已删除，见补记四）。
    3.2 bootloader/config.ini 注释同步：dtb.img = panfrost-ready。
 
 4. 待办（用户侧）
@@ -306,3 +312,61 @@ sway/essway active 且 NRestarts 低、gpu_dtb 无悬空引用。
 5. 风险：本轮仅改源码并推送，未实机构建/验证；SYSTEM 内部 UI_SERVICE 与
    gpu.driver 因本机无 unsquashfs/7z/WSL 无法离线解包确认，依赖上一轮已
    推送的代码改动 + 重建后实机复核。本轮改动基线提交见下。
+
+
+补记四（2026-11-10）：纠正"本机实测只能 panfrost"归因 + 镜像未吃到 DTS 修复的构建断链
+================================================================================
+1. 纠正错误归因
+   此前补记三 2.3 与第三节 3.3 以"本机实测只能用 panfrost 起前端 / libmali
+   找不到设备（缺 midgard 节点）"作为硬件结论，此归因错误，现纠正：
+   - A311D 为 Bifrost G52。panfrost(Mesa) 与厂商 Mali DDK（mali_kbase.ko +
+     libmali）绑的是**同一个** arm,mali-bifrost 节点；libmali 原生支持
+     Bifrost。所谓"libmali 找不到设备"系误判——真正缺失的是 midgard 节点，
+     而 midgard 本就不该出现在 A311D 上（那是给 T 系列老 GPU 的架构）。
+   - 现网把 GPU 栈由 panfrost 切到 libmali 后前端起不来，只证明"那次切换
+     未成功"，不能证明"硬件只能用 panfrost"。失败根因尚未查清（gpudriver
+     libmali 路径 / mali_kbase 加载 / EGL 绑定 / 与已绑定 panfrost 的冲突
+     等），需要实机日志，此前 SSH 掉线未取到。属待诊断的软件问题。
+
+2. 仓库 DTS 翻转方向仍正确，且与"libmali 是否可用"无关
+   &mali(bifrost) 必须 enabled：这是 panfrost 与 libmali 两者都需要的
+   先决条件（mali_kbase 同样 probe arm,mali-bifrost）。mali_vulkan
+   (arm,mali-midgard) 节点对 A311D 是错架构，disabled 正确。故翻转没有
+   "关掉 libmali"，反而让 libmali 更可能工作。DTS 头部与 &mali 注释已同步
+   去掉"本板只能 panfrost"的错误表述。
+
+3. 新发现：20261110 镜像 dtb.img 根本没吃到 DTS 修复（构建断链）
+   用正确实现的 FDT 解析器（tools/a311d_dtb_inspect.py）复核，20261110 镜像
+   内 dtb.img(80,688B) 仍为：
+     /soc/gpu@ffe40000 (arm,mali-bifrost) -> status=disabled
+     /gpu_mali_vulkan@ffe40000 (arm,mali-midgard) -> status=okay
+   与翻转后的仓库 DTS（bifrost okay / midgard disabled）恰好相反。
+   构建链路已坐实：
+     linux/package.mk 编译
+       devices/A311D/linux/dts/amlogic/meson-g12b-a311d-cainiao-cniot-core.dts
+       -> meson-g12b-a311d-cainiao-cniot-core.dtb
+       -> usr/share/bootloader/device_trees/
+     devices/A311D/bootloader/release 复制为 dtb.img
+     bootloader/mkimage: mkimage_aml_boot 写入镜像启动分区
+   因此 dtb.img 确实来自我改的 DTS；镜像仍是旧状态说明：该镜像在含翻转
+   提交（708c46093e）的工作树之外构建（构建机未拉到该提交，或内核 .dtb
+   被缓存未重编）。结论：这张镜像**不能直接刷**——其 bifrost 节点 disabled，
+   任一 GPU 栈都绑不上设备，前端起不来。
+
+4. 必须执行的纠正动作（用户侧）
+   4.1 从当前 a311d HEAD（含 DTS 翻转）做一次干净重建，并清掉内核 DTB
+       缓存以确保 .dtb 被重编。
+   4.2 重建后先用 tools/a311d_dtb_inspect.py 抽取新镜像 dtb.img 复核：
+       期望 bifrost 节点 status=okay、midgard 节点 status=disabled；
+       对照参考：现网可用 DTB(md5 0fee9ffd2a2f3cb4a891b71176e3ee6a,
+       54,984B) 仅有 bifrost 节点(okay)、无 midgard。
+   4.3 确认无误后再刷启动盘；首启仍按第五节第 3 步清旧 /storage 残留
+       （gpu.driver=libmali、999-ui-service）。
+   4.4 libmali 真正可用化列为独立待办：需实机复测 libmali 切换失败的真实
+       根因（非 DTB 问题），不在本轮 DTS 修复范围内。
+
+5. 工具补充
+   tools/a311d_dtb_inspect.py：纯标准库 FDT 解析 + 从 .img(MBR+FAT32) 抽取
+   dtb.img，列出所有 GPU 节点的 compatible/status/reg。用于刷盘前离线核对
+   DTB 节点状态，弥补此前解析脚本的 bug。
+================================================================================
