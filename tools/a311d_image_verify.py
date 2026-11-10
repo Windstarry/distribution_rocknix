@@ -4,7 +4,8 @@
 A311D 刷盘前离线镜像核查（只读，纯标准库，无外部依赖）。
 
 用法:
-  python3 tools/a311d_image_verify.py <image.img|image.img.gz>
+  python3 tools/a311d_image_verify.py <image.img|image.img.gz> [--expect-label <LABEL>]
+  # A311D 刷盘前建议: --expect-label ROCKNIX（设备 U-Boot env 基线）
 
 检查项:
   T1  MBR / FAT32 启动分区可读
@@ -16,6 +17,9 @@ A311D 刷盘前离线镜像核查（只读，纯标准库，无外部依赖）�
   T7  SYSTEM squashfs 头有效 (hsqs)
   T8  KERNEL.IMG 内嵌内核版本字符串（Android boot image）
   T9  .gz 自身 sha256 与同目录 .sha256 清单一致（存在时）
+  T10 启动 label 一致性（FAT32 卷标 / cfgload / cfgload_env /
+      kernel.img Android header cmdline）；--expect-label 时对照已验证基线
+      （A311D 用 ROCKNIX）：不一致即 FAIL，避免 initramfs 挂不上 /flash
 
 输出逐项 PASS/FAIL/WARN/SKIP 与总结论；存在 FAIL 时退出码为 1。
 工具只做静态离线检查，不替代板级启动验证。
@@ -209,7 +213,7 @@ def sha256_of(path):
     return h.hexdigest()
 
 
-def verify(path):
+def verify(path, expect_label=None):
     is_gz = path.lower().endswith(".gz")
     print("=" * 76)
     print("镜像: %s" % path)
@@ -283,6 +287,37 @@ def verify(path):
     else:
         rep.skip("T9", "sha256 清单校验", "同目录无 .sha256 文件")
 
+    # T10 启动 label 一致性。initramfs 用 boot=LABEL=xxx 挂 /flash，挂不上
+    # 会在 15 次重试后打印 "Unable to find LABEL=xxx" 并 poweroff（黑屏）。
+    # 卷标 / cfgload / cfgload_env / kernel.img header cmdline 必须一致，
+    # 且要与设备 U-Boot env 中已保存的基线一致。
+    labels = {}
+    bpb = reader.read_at(fat.start_lba * fat.bps + 71, 11)
+    labels["FAT32 BPB"] = bpb.decode("ascii", "replace").strip() or "(空)"
+    for key in ("cfgload", "cfgload_env"):
+        if key in files:
+            txt = fat.chain_bytes(*files[key]).decode("ascii", "replace")
+            m = re.search(r"boot=LABEL=([A-Za-z0-9_-]+)", txt)
+            labels[key] = m.group(1) if m else "(未找到)"
+    if not is_gz and "kernel.img" in files:
+        khead = fat.chain_bytes(files["kernel.img"][0], min(files["kernel.img"][1], 1024))
+        cmd = khead[64:576].split(b"\x00")[0].decode("ascii", "replace")
+        m = re.search(r"boot=LABEL=([A-Za-z0-9_-]+)", cmd)
+        labels["kernel.img cmdline"] = m.group(1) if m else "(空)"
+    for k, v in labels.items():
+        print("        %-22s %s" % (k, v))
+    known = set(v for v in labels.values() if v not in ("(空)", "(未找到)"))
+    rep.add("T10", len(known) <= 1, "启动 label 内部一致",
+            "取值=%s" % (",".join(sorted(known)) or "无"))
+    if expect_label:
+        bad = [k for k, v in labels.items()
+               if v not in ("(空)", "(未找到)") and v.upper() != expect_label.upper()]
+        rep.add("T10b", not bad, "启动 label 符合基线 %s" % expect_label,
+                "不符项=%s" % (",".join(bad) or "无"))
+    if labels.get("kernel.img cmdline") == "(空)":
+        rep.warn("T10c", "kernel.img Android header 的 cmdline 为空",
+                 "启动完全依赖 U-Boot env；建议写入 boot=LABEL=<卷标> 兜底")
+
     for name, cluster in fat.dirs().items():
         entries = [e[0] for e in fat.dir(cluster) if e[0] and e[0] not in (".", "..")]
         if entries:
@@ -293,14 +328,24 @@ def verify(path):
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("用法: python3 tools/a311d_image_verify.py <image.img|image.img.gz>")
+    args = sys.argv[1:]
+    expect_label = None
+    if "--expect-label" in args:
+        i = args.index("--expect-label")
+        if i + 1 >= len(args):
+            print("--expect-label 缺少参数值")
+            return 2
+        expect_label = args[i + 1]
+        del args[i:i + 2]
+    if len(args) != 1:
+        print("用法: python3 tools/a311d_image_verify.py "
+              "<image.img|image.img.gz> [--expect-label <LABEL>]")
         return 2
-    path = sys.argv[1]
+    path = args[0]
     if not os.path.isfile(path):
         print("文件不存在: %s" % path)
         return 2
-    rep, _, _ = verify(path)
+    rep, _, _ = verify(path, expect_label)
     print("=" * 76)
     if rep.failed():
         print("结论: FAIL —— 存在阻塞项，禁止刷盘。")

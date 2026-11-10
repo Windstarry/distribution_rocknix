@@ -11,8 +11,8 @@ setenv hdr_policy "0"
 setenv quiet "1"
 setenv consoleopt "console=ttyAML0,115200n8 console=tty0 no_console_suspend"
 
-setenv rootopt "BOOT_IMAGE=kernel.img boot=LABEL=AURKNIX disk=LABEL=STORAGE"
-if test "${ce_on_emmc}" = "yes"; then setenv rootopt "BOOT_IMAGE=kernel.img boot=LABEL=AURKNIX disk=LABEL=STORAGE"; fi
+setenv rootopt "BOOT_IMAGE=kernel.img boot=LABEL=ROCKNIX disk=LABEL=STORAGE"
+if test "${ce_on_emmc}" = "yes"; then setenv rootopt "BOOT_IMAGE=kernel.img boot=LABEL=ROCKNIX disk=LABEL=STORAGE"; fi
 
 if fatload ${device} ${devnr}:${partnr} ${loadaddr} resolution.ini; then env import -t ${loadaddr} ${filesize}; fi
 if fatload ${device} ${devnr}:${partnr} ${loadaddr} config.ini; then env import -t ${loadaddr} ${filesize}; fi

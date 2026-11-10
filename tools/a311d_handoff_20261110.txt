@@ -383,6 +383,11 @@ sway/essway active 且 NRestarts 低、gpu_dtb 无悬空引用。
    新构建镜像（15:34 落盘）离线检查全部通过，可以刷启动盘。
    补记四第 3 节"这张镜像不能直接刷"针对上午同名旧 .img，该文件已被
    新构建替换，结论失效。本轮未做板级启动验证，不得写"实机已通过"。
+   【2026-11-10 20:38 更正】上面"可以刷盘"只覆盖分区/DTB/完整性等离线项，
+   未覆盖启动 label 与设备 U-Boot env 的一致性。实机刷盘后正是因此黑屏，
+   根因与修复见补记六。刷盘前必须再跑：
+     python3 tools/a311d_image_verify.py <镜像>.img --expect-label ROCKNIX
+   （当时工具尚无 T10，所以漏检；现已补上。）
 
 1. 受检文件与同源性
    目录 E:\A311d\AURKNIX-image-A311D-20261031\AURKNIX-image-A311D-20261110\
@@ -453,4 +458,101 @@ sway/essway active 且 NRestarts 低、gpu_dtb 无悬空引用。
      (profile.d + gpu.driver) 亦应在 SYSTEM 内，但须实机复核，不作结论。
    - libmali 真正可用化仍为独立待办：需实机复测那次切换失败的真实根因
      （journalctl / dmesg / gpudriver 报错），与 DTB 无关。
+================================================================================
+
+
+补记六（2026-11-10 20:38，北京时间）：实机黑屏故障定位与现场修复
+================================================================================
+0. 现象与结论
+   现象：20261110 最新镜像刷盘后开机提示 "unable to label rocknix"，
+        随后黑屏无法进入前端。启动盘现挂载为 F 盘。
+   结论：不是 GPU/DTB 问题，是启动分区 label 与设备 U-Boot 环境不匹配。
+        initramfs 按 boot=LABEL=ROCKNIX 挂 /flash，而 U 盘卷标是 AURKNIX，
+        重试 15 秒失败后打印 "Unable to find LABEL=..." 并 poweroff（黑屏）。
+        runbook 5.5 早已警告：卷标必须三处同步，只改一处会直接黑屏。
+
+1. 报错来源（已从 ramdisk 反查确认，不是推测）
+   KERNEL.IMG 是 Android boot image，内嵌未压缩 cpio ramdisk 7,346,176 B。
+   init 脚本 mount_common()：
+     for i in 1..15: mount ... /flash; 失败 usleep 1s
+     仍失败 -> echo "Unable to find $1, powering off and on should correct it."
+               >/dev/console
+            -> StartProgress countdown "Power off in 3s..." 3 "NOW" -> poweroff
+   boot 值来自 /proc/cmdline 的 boot=* 分支（LABEL=* 走 mount_common）。
+   故屏幕提示即此句；黑屏是 poweroff 的结果，不是显示驱动问题。
+
+2. 与"最后一次可进系统"镜像的离线逐项对比
+   参考: E:\A311d\AURKNIX-image-A311D-20261031\
+         AURKNIX-A311D.aarch64-20261109-bootsafe-edidmode.img
+   最新: ...\AURKNIX-image-A311D-20261110\AURKNIX-A311D.aarch64-20261110.img
+   两张均 2,198,863,872 B；MBR 分区表完全一致
+   (P1 0x0C/start 32768/size 4194304, P2 0x83/start 4227072/size 65536)。
+   关键差异：
+   - FAT32 BPB 卷标      参考 ROCKNIX      最新 AURKNIX
+   - 根目录 label 项     参考 ROCKNIX      最新 AURKNIX
+   - cfgload boot=LABEL  参考 ROCKNIX      最新 AURKNIX
+   - kernel.img Android header cmdline
+        参考 boot=LABEL=ROCKNIX disk=LABEL=STORAGE console=ttyAML0,115200n8
+              console=tty0 no_console_suspend net.ifnames=0 video=HDMI-A-1:D
+              systemd.debug_shell=ttyAML0
+        最新 空（完全依赖 U-Boot 传 bootargs）
+   - ramdisk_size        参考 0            最新 7,346,176（内嵌 cpio）
+   - aml_autoscript      参考 1466 B 含 4 处 bootargs   最新 1382 B 0 处
+   - dtb.img             参考 54,984 B (S922X 参考, 仅 bifrost okay)
+                         最新 80,688 B (cainiao, bifrost okay + midgard disabled)
+   - 启动文件            参考 kernel / kernel.md5 / kernel2.img / rocknix
+                         最新 aurknix / cfgload_env / config.ini / kernel.img.md5
+   - SYSTEM              参考 1,482,866,688 B  最新 1,474,306,048 B
+   设备 eMMC 保存的 U-Boot env 来自可进系统的 ROCKNIX 链（aml_autoscript
+   有 saveenv、bootargs）；最新镜像把卷标与 cfgload 改成 AURKNIX，且不再
+   在 kernel.img header 写 cmdline，内核拿到的 boot= 与卷标不一致 -> 失败。
+
+3. 现场修复（已在 F 盘执行，全部离线校验通过）
+   备份: E:\A311d\AURKNIX-image-A311D-20261031\boot_backup_20261110\
+         cfgload / cfgload_env / config.ini / kernel.img.md5 / aml_autoscript
+         + README.txt 回滚说明；原卷标 AURKNIX。
+   3.1 FAT32 卷标 AURKNIX -> ROCKNIX（SetVolumeLabelW；fsutil 复核 ROCKNIX，
+       BPB 卷标与根目录卷标项同步）。
+   3.2 cfgload_env 两处 boot=LABEL=AURKNIX -> ROCKNIX（等长，仍 3078 B）。
+   3.3 cfgload 是 U-Boot legacy script（magic 27051956、大端头、data 2948 B）：
+       数据区两处等长替换，重算 dcrc=0xB8A513AA、hcrc=0x0DC8A1B6；
+       复核头内值与重算值一致，无 AURKNIX 残留。
+   3.4 新建 0 字节 marker "rocknix"（与参考镜像一致）。
+   3.5 kernel.img / dtb.img / SYSTEM 未改动（md5 与镜像内 .md5 清单一致）。
+   3.6 修复后：卷标 ROCKNIX、cfgload 2 处 ROCKNIX、cfgload_env 2 处 ROCKNIX；
+       参考镜像三处（BPB / cfgload / kernel header cmdline）亦均为 ROCKNIX。
+   回滚：备份文件复制回 F:\，卷标改回 AURKNIX，删除 rocknix marker。
+
+4. 仓库源码修复（下次重建生效，不影响其它设备）
+   - projects/ROCKNIX/devices/A311D/options 增 DISTRO_BOOTLABEL="ROCKNIX"
+     设备级覆盖。config/options 加载顺序为 DISTRO -> PROJECT -> DEVICE，
+     故只作用于 A311D；其它设备仍沿用 AURKNIX。注释写明不同步会黑屏。
+   - devices/A311D/bootloader/scripts/Generic_cfgload.src 两处 rootopt
+     boot=LABEL=AURKNIX -> ROCKNIX。
+   - tools/a311d_image_verify.py 新增 T10/T10b/T10c 与 --expect-label：
+     比对 FAT32 卷标、cfgload、cfgload_env、kernel.img Android header
+     cmdline 四处 boot=LABEL。实跑：最新镜像 + --expect-label ROCKNIX
+     -> T10b FAIL、退出码 1（能拦住本次故障），并 WARN header cmdline 为空。
+     参考镜像是旧式启动链（无 config.ini/cfgload_env），工具 T2 对其不适用，
+     其 label 一致性由对比脚本单独核实为三处 ROCKNIX。
+
+5. 待用户执行 / 后续步骤
+   5.1 安全弹出 F 盘，插回设备重新上电。期望不再出现 Unable to find LABEL，
+       能进入前端。
+   5.2 若仍黑屏：把 kernel.img Android header 的 cmdline 字段
+       (offset 64, 512 B) 写入第 2 节参考镜像的字符串，并同步更新
+       kernel.img.md5；这样即使 U-Boot env 为空也有 boot=LABEL=ROCKNIX
+       兜底。本轮未做，先验证最小改动是否足够。
+   5.3 实机起来后再按补记五第 4 节做 GPU/系统验收（UI_SERVICE、
+       gpu.driver、uname -r 与模块 vermagic、/dev/dri）。
+   5.4 后续重建一律先跑
+       python3 tools/a311d_image_verify.py <新镜像>.img --expect-label ROCKNIX
+       复核 label 一致性，避免复发。
+
+6. 未验证项（不得写成已通过）
+   - 本轮只做离线镜像对比与 F 盘离线修复，未做板级上电验证。
+   - 设备 U-Boot env 中的实际 bootargs 未用串口读取；ROCKNIX 值由屏幕报错、
+     参考镜像链与 aml_autoscript 的 saveenv 行为推断，置信度高但需实机确认。
+   - 若设备 env 实际不是 ROCKNIX，按 5.2 写 kernel header cmdline 兜底，
+     或串口执行 env default -a; saveenv 清除旧 env。
 ================================================================================

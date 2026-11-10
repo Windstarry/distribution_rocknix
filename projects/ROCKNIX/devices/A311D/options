@@ -101,3 +101,13 @@
 
   # Disk Swap
     SWAP_FILE_SIZE="0"
+
+  # Boot partition label for this board.
+  # The distro-wide default is AURKNIX, but the stock Amlogic U-Boot env on
+  # this device (and the upstream ROCKNIX initramfs) resolves
+  # boot=LABEL=ROCKNIX. With a differently labelled FAT partition initramfs
+  # cannot mount /flash: it retries 15s, prints "Unable to find LABEL=ROCKNIX"
+  # and powers off (black screen). Verified against the last bootable image
+  # AURKNIX-A311D.aarch64-20261109-bootsafe-edidmode.img.
+  # Must stay in sync with bootloader/scripts/Generic_cfgload.src (rootopt).
+    DISTRO_BOOTLABEL="ROCKNIX"
