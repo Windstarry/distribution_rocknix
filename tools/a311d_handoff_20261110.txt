@@ -1100,3 +1100,165 @@ sway/essway active 且 NRestarts 低、gpu_dtb 无悬空引用。
    - origin/a311d 仍为 f24897ecb4；本地领先 6 个提交（详见时间线
      文档第 10 节）。板级上电验证仍未完成，不得写"已修复"。
 ================================================================================
+
+补记十一  阶段 B 引导链固化进 CI 产物（2026-11-10 23:33 ~ 24:00）
+================================================================================
+
+0. 目标与交付判定
+   用户指令：把阶段 B 的六项引导链特征固化进 A311D 的 CI 产物
+   （cmdline 完整、ramdisk_size=0 内建 initramfs、经典 cfgload /
+   aml_autoscript、实机 54,984 B dtb.img、卷标 ROCKNIX、不引入 ceboot）。
+   本轮已把六项特征全部落到**源码与 CI 构建脚本**，并加防回归闸门。
+   注意验收分级：源码改造与离线核查已完成；CI 实跑、板级上电、
+   前端启动验收**均未完成**，不得写"已修复"。
+
+1. 新增的活体证据（本轮中途用户把设备换成 AURKNIX 上线）
+   1.1 设备 192.168.31.7 (root/rocknix) 刷入
+       AURKNIX-A311D.aarch64-20261109-bootsafe-edidmode.img 后上线。
+       内核 6.18.49；blkid sda1 LABEL="ROCKNIX" 挂 /flash(ro)、
+       sda2 STORAGE、sda3 GAMES；首启扩容完成；SSH 可登录、
+       uptime 15 min、is-system-running=degraded。
+       完整论证：tools/a311d_aurknix_runnable_proof_20261110.txt
+       原始采集：E:/A311d/.../aurknix_live_20261110_2345{,_part2,_part3}.txt
+   1.2 活机 /flash 三文件 md5 与本地 GOLD 镜像、新提取的 bootkit
+       三方一致：
+         cfgload        497 B  1a3a799f88b29c2843106f7d971de372
+         aml_autoscript 1466 B 21e3fb29c6dd0f0e20efcffc7b3ac31f
+         dtb.img      54984 B 0fee9ffd2a2f3cb4a891b71176e3ee6a
+   1.3 /proc/config.gz 实证 CONFIG_INITRAMFS_SOURCE 指向内建
+       initramfs、CONFIG_INITRAMFS_COMPRESSION_LZO=y，
+       USB_STORAGE / UAS / SCSI / BLK_DEV_SD / XHCI / DWC3 全 =y。
+       kernel.img 为 Android v0、ramdisk_size=0。
+   1.4 /proc/device-tree/model = CAINIAO CNIoT-CORE；
+       /soc/gpu@ffe40000 compatible = amlogic,meson-g12a-mali,
+       arm,mali-bifrost，status 缺省即 okay。固化黄金 DTB 不会
+       破坏 libmali / panfrost 双栈。
+   1.5 前端阻断实锤：运行内核 6.18.49，
+       /usr/lib/kernel-overlays/base/lib/modules/ 只有 6.18.21
+       （含 mali_kbase.ko），/lib/modules/6.18.49/ 为空；
+       modprobe -n mali_kbase 报 "FATAL: Module mali_kbase not
+       found in directory /lib/modules/6.18.49"。
+       /etc/profile.d/090-ui_service 不存在，gpu.driver 空，
+       essway/sway 均 inactive(dead)、disabled。
+       => 再次证明「缺 libmali」是误判，真因是版本混刷 + 配置缺口。
+   1.6 USB 启动链完整：3.649 usb-storage detected → 3.655 scsi host0
+       → 4.676 Direct-Access → 4.736 [sda] Attached SCSI removable disk。
+       本次启动盘是 346d:5678 Kingston DataTraveler 3.2（62.9 GB，
+       USB2.0，第三块盘，非此前记录的 048d:1234 / 152d:0583）。
+       这使补记九 4.1「盘侧嫌疑」降权：同类普通 U 盘在 6.18.49
+       下完整生成 sdX，而 20261110 的 6.18.21 内核缺失整段。
+       仍不排除盘差异，双盘对插验证保留为可选项。
+   1.7 /proc/cmdline 尾部与黄金 cfgload 的 bootargs 逐字一致；
+       U-Boot 是「追加」eMMC env bootargs 而非替换。
+       dmesg 中 "Unknown kernel command line parameters ... will be
+       passed to user space" 是 initramfs 消费 boot=/disk= 的正常表现。
+   1.8 /etc/os-release 仍写 OS_NAME="ROCKNIX" / 20261031 /
+       BUILD_BRANCH=a311d —— SYSTEM 来自 20261031 AURKNIX CI 构建，
+       branding 未改，排查时勿误判为社区 ROCKNIX rootfs。
+
+2. 新增仓库资产：bootkit（实机验证字节，非编译产物）
+   projects/ROCKNIX/devices/A311D/bootloader/bootkit/
+     cfgload 497 B / aml_autoscript 1466 B / dtb.img 54,984 B
+     SHA256SUMS、SOURCES.txt（来源、校验值、完整可读脚本源、变更纪律）
+   为何用二进制资产而不是 mkimage 重新编译 .src：
+     a) U-Boot script payload 前 8 字节是长度前缀（BE32 文本长度
+        + 4 字节 0），实测 cfgload 00 00 01 b4、aml_autoscript
+        00 00 05 72；mkimage -T script 不生成该前缀。
+     b) uImage 头含 timestamp / hcrc / dcrc，每次构建都变，
+        实机验证的是具体字节。
+     c) 黄金 DTB 的 USB VBUS regulator 绑定与本地 DTS 产物不同。
+   cfgload 的长度前缀 436 与当前文本 425 不一致，是 11-09 EDID
+   等长修正（508→497 B，dsize/dcrc 未重算）遗留；Amlogic 2015.01
+   不校验且实机正常，保持原样，核查工具标 WARN 不阻断。
+
+3. 六项特征对应的源码改动（逐项可追溯）
+   3.1 cmdline 完整
+       - devices/A311D/options 新增 BOOTIMG_CMDLINE，逐字复刻活机
+         /proc/cmdline 尾部（153 B，含 video=HDMI-A-1:D）。
+       - devices/A311D/bootloader/mkbootimg 改为
+         --cmdline "${BOOTIMG_CMDLINE}"，并在生成后用内联 Python
+         自检 Android 头（magic / ramdisk_size=0 / cmdline 相等），
+         不符立即 exit 1。
+   3.2 ramdisk_size=0 内建 initramfs
+       - packages/linux/package.mk pre_make_target：把「清空
+         CONFIG_INITRAMFS_SOURCE」限制为仅 S905；A311D 与其他设备
+         一样走 "$(kernel_initramfs_confs) ${BUILD}/initramfs"。
+       - make_target：外部 cpio 生成限定在 S905 分支内；A311D 的
+         mkbootimg 不带 --ramdisk。
+       - S905 的 mkbootimg 未改动（回归保护，核查项 S11）。
+   3.3 经典 cfgload / aml_autoscript
+       - devices/A311D/bootloader/scripts/*.src 已删除（另一套设计：
+         Generic_cfgload + ceboot 二次注入），避免源码与产物不一致。
+       - devices/A311D/packages/u-boot/package.mk 改为直接从
+         bootkit 复制三个文件，安装名沿用 Generic_cfgload 约定。
+   3.4 实机 54,984 B dtb.img
+       - u-boot/package.mk 安装 dtb.img 及同名的
+         device_trees/meson-g12b-a311d-cainiao-cniot-core.dtb
+         （OTA update.sh 用 cmp 比对，必须同源）。
+       - linux/package.mk 的 A311D DTB 安装分支改为空实现，本地
+         编译 DTB 不再进入 /flash。
+       - bootloader/release 删除「用本地 dtb 覆盖 dtb.img」逻辑，
+         改为校验 dtb.img 存在且与 device_trees 同源。
+       - bootloader/config.ini 注释改写：黄金 cfgload 不 import
+         config.ini、不使用 gpu_dtb；GPU 栈在用户态切换。
+   3.5 卷标 ROCKNIX
+       - 11-10 20:46 已由 a57bc4ba2b 在设备级 options 覆盖
+         DISTRO_BOOTLABEL；20261110 镜像构建于 07:34/15:34，
+         早于该提交故仍是 AURKNIX。该项已固化，重建即生效。
+         config/options 加载顺序为 DISTRO→PROJECT→DEVICE，
+         设备级最后加载，覆盖有效。
+   3.6 不引入 ceboot
+       - u-boot/package.mk 不再生成 Generic_cfgload_env，并
+         rm -f 清理残留。
+       - projects/ROCKNIX/bootloader/mkimage 的 mkimage_aml_boot()
+         增加 `DEVICE != A311D` 守卫，即使 release 目录误放该文件
+         也不会 mcopy 成 cfgload_env（S905 行为不变）。
+       - devices/A311D/bootloader/update.sh 不再复制 cfgload_env，
+         改为在 OTA 时删除旧的 /flash/cfgload_env。
+
+4. 防回归闸门
+   4.1 新增 tools/a311d_ci_bootchain_check.py（纯标准库，只读）：
+       --repo   静态核查 11 组（S1~S11）源码与 bootkit 六特征 +
+                S905 回归保护；
+       --img    核查 .img/.img.gz 的 FAT 卷标、三件套 md5、
+                无 cfgload_env、ramdisk_size、header cmdline、
+                SYSTEM/kernel md5；
+       --skip-integrity  跳过全量 md5，避免 CI 的 2.2 GB gzip 流
+                全量驻留内存；
+       --json   机器可读报告。
+       退出码 0=全 PASS，1=有 FAIL，2=用法/环境错误。
+   4.2 .github/workflows/build-aarch64-image.yml 在 Get date 之后、
+       upload-artifact 之前插入 A311D 专属 step
+       "Verify A311D stage-B boot chain"（if: inputs.DEVICE == 'A311D'）：
+       先跑静态核查，再对 target/AURKNIX-*.img.gz 跑镜像核查，
+       失败即中断构建、不发布镜像；报告写入 artifact。
+   4.3 实跑四场景（记录：E:/A311d/.../ci_bootchain_check_run_20261110.txt）
+       A 改造后仓库静态核查      24 PASS / 0 FAIL / 1 WARN  退出码 0
+       B GOLD 20261109 镜像      33 PASS / 0 FAIL           退出码 0
+       C 20261110 CI 原始镜像     1 PASS / 9 FAIL           退出码 1
+       D 20261110-livefixed       7 PASS / 3 FAIL           退出码 1
+       C 的 9 项 FAIL 正好对应六特征缺失；D 精确识别出「三件套
+       已换但 cfgload 用了 508 B 参考版、cfgload_env 残留、
+       ramdisk_size 仍 7,346,176」，与历史上电仍黑屏一致。
+   => 闸门具备区分「目标形态 / 未修复 / 半修复」的能力。
+
+5. 验证分级（接手人必须按此表述，不得越级）
+   [已完成] 源码改造、bootkit 三方 md5 闭环、shell 语法检查、
+            静态核查、离线镜像解析、四场景回归、CI 闸门接入。
+   [未执行] GitHub Actions 完整重建（用户手动触发）。
+   [未执行] 新 CI 镜像刷盘上电、六特征实机确认。
+   [未执行] 前端启动验收（同源 KERNEL/SYSTEM 后 mali_kbase
+            能否加载、essway/sway 能否拉起）。
+   关键未验证假设：黄金 DTB 编译自 6.18.49 内核 DTS，与 CI 同源
+   6.18.21 内核的绑定关系属工程推断，须由 CI 实跑 + 上电确认。
+
+6. 设备状态与下一步
+   - 本轮对 192.168.31.7 全程只读，未刷盘、未重启、未改配置；
+     23:56 已答复用户「可以下线」，建议正常 poweroff 后断电，
+     并保留该 Kingston 盘作为已知可进系统的回退/对照盘。
+   - 下一步最短路径：用户手动触发 action → 下载新镜像 →
+     用 a311d_ci_bootchain_check.py --img 复核 → 刷盘上电 →
+     串口确认 USB 枚举与 /flash 挂载 → 验收前端。
+   - 若新镜像仍不能启动，优先怀疑「6.18.21 内核 + 6.18.49 DTS
+     编译的黄金 DTB」组合，再考虑回退到 6.18.49 内核同源构建。
+================================================================================

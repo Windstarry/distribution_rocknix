@@ -10,15 +10,16 @@ if [ -d "${SRCDIR}/device_trees" ]; then
   cp -a "${SRCDIR}/device_trees/"*.dtb "${DSTDIR}/device_trees/"
 fi
 
-# default dtb.img: CAINIAO CNIoT-CORE / LEMO CORE A311D (Amlogic A311D, G12B)
-DEFAULT_DTB=""
-for dtb in meson-g12b-a311d-cainiao-cniot-core.dtb; do
-  if [ -f "${DSTDIR}/device_trees/${dtb}" ]; then
-    DEFAULT_DTB="${dtb}"
-    break
-  fi
-done
-
-if [ -n "${DEFAULT_DTB}" ]; then
-  cp -v "${DSTDIR}/device_trees/${DEFAULT_DTB}" "${DSTDIR}/dtb.img"
+# Stage-B: dtb.img is the verified 54,984-byte bootkit binary installed by
+# the u-boot package; mkimage_aml_boot() mcopies it to /flash/dtb.img.
+# Do NOT overwrite it with a locally compiled dtb - the local DTS output is
+# a different (80,688 B) tree whose USB VBUS regulator bindings are not the
+# ones validated on the board.
+if [ ! -f "${DSTDIR}/dtb.img" ]; then
+  echo "A311D: dtb.img was not installed from bootkit" >&2
+  exit 1
+fi
+if ! cmp -s "${DSTDIR}/dtb.img" "${DSTDIR}/device_trees/meson-g12b-a311d-cainiao-cniot-core.dtb"; then
+  echo "A311D: dtb.img and device_trees dtb differ (OTA cmp would fail)" >&2
+  exit 1
 fi

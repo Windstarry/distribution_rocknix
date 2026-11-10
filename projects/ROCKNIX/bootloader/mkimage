@@ -176,7 +176,11 @@ mkimage_aml_boot() {
   if [ -f "${RELEASE_DIR}/3rdparty/bootloader/Generic_cfgload" ]; then
     mcopy "${RELEASE_DIR}/3rdparty/bootloader/Generic_cfgload" ::/cfgload
   fi
-  if [ -f "${RELEASE_DIR}/3rdparty/bootloader/Generic_cfgload_env" ]; then
+  # A311D uses the verified stage-B chain and must never carry cfgload_env
+  # (ceboot). Guard here in addition to the u-boot package, so a stray
+  # Generic_cfgload_env in the release dir cannot reintroduce the legacy path.
+  if [ "${DEVICE}" != "A311D" ] && \
+     [ -f "${RELEASE_DIR}/3rdparty/bootloader/Generic_cfgload_env" ]; then
     mcopy "${RELEASE_DIR}/3rdparty/bootloader/Generic_cfgload_env" ::/cfgload_env
   fi
   if [ -f "${RELEASE_DIR}/3rdparty/bootloader/dtb.img" ]; then

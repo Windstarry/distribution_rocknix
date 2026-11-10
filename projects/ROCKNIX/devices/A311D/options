@@ -109,5 +109,16 @@
   # cannot mount /flash: it retries 15s, prints "Unable to find LABEL=ROCKNIX"
   # and powers off (black screen). Verified against the last bootable image
   # AURKNIX-A311D.aarch64-20261109-bootsafe-edidmode.img.
-  # Must stay in sync with bootloader/scripts/Generic_cfgload.src (rootopt).
+  # Must stay in sync with bootloader/bootkit/cfgload (setenv bootargs).
     DISTRO_BOOTLABEL="ROCKNIX"
+
+  # Stage-B boot chain: the Android boot image header cmdline must be
+  # identical to the "setenv bootargs" string inside bootkit/cfgload.
+  # Amlogic U-Boot 2015.01 appends the cfgload bootargs to the eMMC env
+  # bootargs; keeping both strings identical makes the result independent
+  # of whether U-Boot appends or replaces. Verified on the live system at
+  # 192.168.31.7 (2026-11-10): /proc/cmdline ends with this exact string.
+  # video=HDMI-A-1:D is the meson DRM user-defined mode fix from 11-09;
+  # do NOT "repair" it back to 1920x1080@60.
+  # bootfromusb is appended by aml_autoscript at runtime, not part of this.
+    BOOTIMG_CMDLINE="boot=LABEL=ROCKNIX disk=LABEL=STORAGE console=ttyAML0,115200n8 console=tty0 no_console_suspend net.ifnames=0 video=HDMI-A-1:D systemd.debug_shell=ttyAML0"

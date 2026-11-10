@@ -2,16 +2,46 @@
 # Copyright (C) 2018-present Team CoreELEC (https://coreelec.org)
 # Adapted for ROCKNIX A311D chain-boot (stock Amlogic U-Boot, Android boot image)
 #
-# The stock 2015.01 Amlogic U-Boot on this box cannot handle a
-# zstd-compressed ramdisk in the Android boot image (black screen at
-# bootm). Keep the ramdisk as an uncompressed newc cpio, matching
-# EmuELEC/CoreELEC which boots fine on this hardware.
+# Stage-B proven boot chain, verified live on 192.168.31.7 (2026-11-10):
+#   * initramfs is built INTO the kernel (CONFIG_INITRAMFS_SOURCE), so the
+#     Android boot image must NOT carry an external ramdisk: ramdisk_size=0.
+#   * the header cmdline is complete and identical to the bootargs inside
+#     bootkit/cfgload. BOOTIMG_CMDLINE comes from devices/A311D/options.
+# The old version packed an uncompressed cpio as an external ramdisk and
+# left the cmdline empty. That combination never produced a bootable image
+# on this board and is the reason every post-20261109 CI build black-screens
+# with "Unable to find LABEL=ROCKNIX".
+#
+# Do not reintroduce --ramdisk here. Do not derive the cmdline from
+# EXTRA_CMDLINE: that adds "quiet" and drops the EDID / net.ifnames settings.
 
-RAMDISK=${BUILD}/image/${1}.cpio
+if [ -z "${BOOTIMG_CMDLINE}" ]; then
+  echo "A311D: BOOTIMG_CMDLINE is unset; refusing to build a cmdline-less boot.img" >&2
+  exit 1
+fi
 
 echo
-echo "Using uncompressed ramdisk ${1}.cpio (stock U-Boot compatible)"
-stat -c "  %s bytes  %n" ${RAMDISK}
+echo "A311D: building Android boot image (builtin initramfs, ramdisk_size=0)"
+echo "       cmdline: ${BOOTIMG_CMDLINE}"
 
-LDFLAGS="" mkbootimg --kernel arch/${TARGET_KERNEL_ARCH}/boot/${KERNEL_TARGET} --ramdisk ${RAMDISK} \
-  ${ANDROID_BOOTIMG_OPTIONS} --output arch/${TARGET_KERNEL_ARCH}/boot/boot.img
+LDFLAGS="" mkbootimg --kernel arch/${TARGET_KERNEL_ARCH}/boot/${KERNEL_TARGET} \
+  ${ANDROID_BOOTIMG_OPTIONS} \
+  --cmdline "${BOOTIMG_CMDLINE}" \
+  --output arch/${TARGET_KERNEL_ARCH}/boot/boot.img || exit 1
+
+# Fail the build immediately if the tool produced the wrong shape.
+python3 - arch/${TARGET_KERNEL_ARCH}/boot/boot.img "${BOOTIMG_CMDLINE}" <<'PYEOF'
+import struct, sys
+path, want = sys.argv[1], sys.argv[2]
+with open(path, "rb") as f:
+    head = f.read(2048)
+if head[:8] != b"ANDROID!":
+    sys.exit("A311D: boot.img has no ANDROID! magic")
+ramdisk_size = struct.unpack_from("<I", head, 16)[0]
+cmdline = head[64:576].split(b"\x00")[0].decode("ascii", "replace")
+if ramdisk_size != 0:
+    sys.exit("A311D: ramdisk_size=%d, expected 0 (builtin initramfs)" % ramdisk_size)
+if cmdline != want:
+    sys.exit("A311D: header cmdline mismatch\n  got : %r\n  want: %r" % (cmdline, want))
+print("A311D: boot.img OK (ramdisk_size=0, cmdline %d bytes)" % len(cmdline))
+PYEOF

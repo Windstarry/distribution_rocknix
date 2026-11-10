@@ -305,7 +305,66 @@ A311D / AURKNIX 移植进展时间线
         与 kernel header 字段来源不同，二者不矛盾。
 
 ================================================================================
-相关文档：tools/a311d_handoff_20261110.txt（补记一~十）
+阶段 G｜阶段 B 引导链固化进 CI 产物（11-10 23:33 ~ 24:00）
+
+   23:33  用户指令：把阶段 B 六特征固化进 A311D 的 CI 产物
+           （cmdline 完整 / ramdisk_size=0 内建 initramfs /
+             经典 cfgload+aml_autoscript / 54,984 B dtb.img /
+             卷标 ROCKNIX / 不引入 ceboot）。
+           先做仓库与构建链全面取证：确认黄金链与 CI 链是两套设计，
+           黄金 payload 带 8 字节长度前缀，CE 链靠 cfgload_env/ceboot。
+
+   23:45  用户把 192.168.31.7 换成 AURKNIX（20261109-bootsafe-edidmode
+           刷盘）上线，要求再做可运行性论证。SSH 只读取证：
+           内核 6.18.49、三分区挂载成功、usb-storage→scsi→sdX 完整、
+           /flash 三件套 md5 与本地 GOLD 一致、内建 initramfs、
+           USB 驱动全 =y、Bifrost GPU 节点默认 okay。
+           前端阻断实锤：modprobe mali_kbase 找不到
+           /lib/modules/6.18.49（模块目录只有 6.18.21）。
+           => 论证成文 tools/a311d_aurknix_runnable_proof_20261110.txt。
+
+   23:52  从 GOLD 镜像提取黄金三件套到仓库 bootkit/
+           （cfgload 497 B / aml_autoscript 1466 B / dtb.img 54,984 B），
+           md5 与活机 /flash 三方闭环；附 SHA256SUMS 与 SOURCES.txt。
+
+   23:56  用户问设备能否下线 -> 答复可以（全程只读），建议 poweroff
+           并保留该盘作回退/对照；本任务不依赖设备在线。
+
+   ~24:00 源码改造 + 防回归闸门 + 离线验证 + 文档，本地提交。
+
+   阶段 G 产物（相对阶段 F 新增）
+     projects/ROCKNIX/devices/A311D/bootloader/bootkit/{cfgload,
+       aml_autoscript,dtb.img,SHA256SUMS,SOURCES.txt}
+     projects/ROCKNIX/devices/A311D/options           + BOOTIMG_CMDLINE
+     .../bootloader/mkbootimg                        - ramdis +cmdline +自检
+     .../bootloader/release                          固定黄金 dtb + cmp
+     .../bootloader/update.sh                        不复制/清理 cfgload_env
+     .../bootloader/config.ini                       注释对齐黄金链
+     .../packages/u-boot/package.mk                  装 bootkit、不生成 ceboot
+     .../bootloader/scripts/{Generic_cfgload,aml_autoscript}.src  删除
+     projects/ROCKNIX/packages/linux/package.mk     A311D 内建 initramfs、
+                                                    不装本地 DTB；S905 不变
+     projects/ROCKNIX/bootloader/mkimage            A311D cfgload_env 守卫
+     .github/workflows/build-aarch64-image.yml      A311D 出图闸门
+     tools/a311d_ci_bootchain_check.py              六特征核查工具
+     tools/a311d_aurknix_runnable_proof_20261110.txt
+     tools/a311d_handoff_20261110.txt               补记十一
+
+   阶段 G 验证记录（E:/A311d/.../ci_bootchain_check_run_20261110.txt）
+     A 静态核查 24 PASS / 0 FAIL / 1 WARN  退出码 0
+     B GOLD 20261109 镜像 33 PASS / 0 FAIL 退出码 0
+     C 20261110 CI 原始 1 PASS / 9 FAIL    退出码 1
+     D 20261110-livefixed 7 PASS / 3 FAIL  退出码 1
+     shell 语法检查全部通过；git diff --check 无空白错误。
+     [未执行] CI 完整重建 / 板级上电 / 前端启动验收。
+
+   阶段 G 结论：回归点（阶段 D 的构建路径切换）已从「盘级补丁」
+   提升为「源码级固化 + CI 闸门」。下一次完整重建要么产出符合
+   六特征的镜像，要么在发布前被闸门拦下，不会再出现
+   「重建即复发」。
+================================================================================
+相关文档：tools/a311d_handoff_20261110.txt（补记一~十一）
           tools/a311d_runbook.txt
+          tools/a311d_aurknix_runnable_proof_20261110.txt
           .workbuddy/memory/2026-10-31.md / 2026-11-09.md / 2026-11-10.md
 ================================================================================

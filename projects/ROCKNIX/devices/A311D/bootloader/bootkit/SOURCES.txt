@@ -1,0 +1,107 @@
+================================================================================
+A311D stage-B bootkit — 实机验证引导链固定资产
+================================================================================
+本目录的三个文件是二进制资产，CI 构建时逐字节复制到镜像 /flash。
+它们不是源码编译产物，不要手工编辑、不要用 mkimage 重新生成。
+
+--------------------------------------------------------------------------------
+一、来源与验证链
+--------------------------------------------------------------------------------
+  提取源：E:/A311d/AURKNIX-image-A311D-20261031/
+          AURKNIX-A311D.aarch64-20261109-bootsafe-edidmode.img
+          （唯一已知可进入 A311D 系统的 AURKNIX 镜像，阶段 B 产物）
+
+  三方一致性（2026-11-10 实测，全部相等）：
+    本地 GOLD .img  ==  活机 192.168.31.7 的 /flash  ==  本目录 bootkit
+
+  文件           大小(B)   md5
+    cfgload          497   1a3a799f88b29c2843106f7d971de372
+    aml_autoscript  1466   21e3fb29c6dd0f0e20efcffc7b3ac31f
+    dtb.img        54984   0fee9ffd2a2f3cb4a891b71176e3ee6a
+
+  活机证据：192.168.31.7 (root/rocknix)，/flash 挂载为 vfat ro，
+  内核 6.18.49、/proc/cmdline 末尾与本目录 cfgload 的 bootargs 一致，
+  blkid 显示 sda1 LABEL="ROCKNIX"、sda2 STORAGE、sda3 GAMES。
+  完整论证见 tools/a311d_aurknix_runnable_proof_20261110.txt。
+
+  注：cfgload 采用 11-09 的 EDID 修正版（video=HDMI-A-1:D），
+  不是 ROCKNIX-S922X-BOX 参考镜像的 1920x1080@60 版本。
+  该修正把 508 B 缩短为 497 B，uImage 头的 dsize/dcrc 未重算，
+  Amlogic 2015.01 U-Boot 不校验它们且实机启动正常。**保持原样**。
+
+--------------------------------------------------------------------------------
+二、为什么必须用二进制资产而不是 .src 重新编译
+--------------------------------------------------------------------------------
+  1. U-Boot script (uImage type=6) 的 payload 前 8 字节是长度前缀
+     （大端 BE32 文本长度 + 4 字节 0），本机实测：
+       cfgload        payload 前缀 00 00 01 b4  (436 = 文本长度)
+       aml_autoscript payload 前缀 00 00 05 72  (1394 = 文本长度)
+     mkimage -T script 不会生成这个前缀，重新编译会破坏 Amlogic
+     老 U-Boot 的 autoscr 解析。
+  2. uImage 头含 timestamp / hcrc / dcrc，每次构建都变；实机验证的是
+     具体字节，重编译等于引入未验证变量。
+  3. dtb.img 是 ROCKNIX S922X-BOX 20261108 镜像的板级设备树编译产物，
+     54,984 B，其 /soc/gpu@ffe40000 为 arm,mali-bifrost 且 status 缺省
+     （默认 okay），USB regulator 为 regulator-usb-pwr / -switch。
+     本地 DTS 编译产物为 74,382 / 80,688 B，USB VBUS regulator 绑定不同，
+     是 20261110 构建在内核阶段看不到 USB 启动盘的主要嫌疑。
+
+--------------------------------------------------------------------------------
+三、可读脚本源（仅供查阅；修改后须重新生成二进制并做板级验证）
+--------------------------------------------------------------------------------
+
+  ---- cfgload (uImage payload 文本部分，436 B) ----
+if fatload mmc 0:1 0x01000000 dtb.img; then setenv dtb_mem_addr 0x01000000; fi
+setenv bootargs 'boot=LABEL=ROCKNIX disk=LABEL=STORAGE console=ttyAML0,115200n8 console=tty0 no_console_suspend net.ifnames=0 video=HDMI-A-1:D systemd.debug_shell=ttyAML0'
+if fatload mmc 0:1 0x01080000 kernel.img; then bootm 0x01080000; fi
+if fatload mmc 0:1 0x01100000 kernel2.img; then bootm 0x01100000; fi
+echo S922X-BOX all boot paths failed
+
+  ---- aml_autoscript (uImage payload 文本部分，1394 B) ----
+defenv
+setenv bootfromnand 0
+setenv upgrade_step 2
+setenv ce_on_emmc "no"
+setenv sddtb 'if fatload mmc 0 ${dtb_mem_addr} dtb.img; then else store dtb read $dtb_mem_addr; fi'
+setenv usbdtb 'if fatload usb 0 ${dtb_mem_addr} dtb.img; then else store dtb read $dtb_mem_addr; fi'
+setenv cfgloadsd 'if fatload mmc 0:1 ${loadaddr} cfgload; then setenv device mmc; setenv devnr 0; setenv partnr 1; autoscr ${loadaddr}; fi'
+setenv cfgloadusb 'if fatload usb 0:1 ${loadaddr} cfgload; then setenv device usb; setenv devnr 0; setenv partnr 1; autoscr ${loadaddr}; fi'
+setenv cfgloademmc 'for p in 1 2 3 4 5 6 7 8 9 A B C D E F 10 11 12 13 14 15 16 17 18; do if fatload mmc 1:${p} ${loadaddr} cfgload; then setenv device mmc; setenv devnr 1; setenv partnr ${p}; setenv ce_on_emmc "yes"; autoscr ${loadaddr}; fi; done;'
+setenv bootfromsd 'if mmcinfo; then run cfgloadsd; if fatload mmc 0 ${loadaddr} kernel.img; then run sddtb; setenv bootargs ${bootargs} bootfromsd; bootm; fi; fi'
+setenv bootfromusb 'usb start 0; run cfgloadusb; if fatload usb 0 ${loadaddr} kernel.img; then run usbdtb; setenv bootargs ${bootargs} bootfromusb; bootm; fi'
+setenv bootfromemmc 'run cfgloademmc'
+setenv bootcmd 'if test ${bootfromnand} = 1; then setenv bootfromnand 0; saveenv; else run bootfromsd; run bootfromusb; run bootfromemmc; fi; run storeboot'
+
+saveenv
+run storeargs
+run bootfromsd
+run bootfromusb
+run bootfromemmc
+
+  注意：这两个脚本是 CoreELEC 经典链，不含 cfgload_env / ceboot。
+  旧版 devices/A311D/bootloader/scripts/*.src 是另一套设计
+  （Generic_cfgload + ceboot 二次注入），已从构建链移除并删除。
+
+--------------------------------------------------------------------------------
+四、变更纪律
+--------------------------------------------------------------------------------
+  1. 修改任一资产必须同步更新 SHA256SUMS 与 tools/a311d_ci_bootchain_check.py
+     中的期望值，并在 handoff 记录新的板级验证结果。
+  2. devices/A311D/options 的 BOOTIMG_CMDLINE 必须与本目录 cfgload 里
+     setenv bootargs 的字符串逐字一致（U-Boot 是追加 bootargs，两者一致
+     可使「追加/替换」两种行为结果相同）。
+  3. DISTRO_BOOTLABEL 必须为 ROCKNIX，与 boot=LABEL=ROCKNIX 一致。
+  4. 禁止在 CI 产物中出现 cfgload_env、Generic_cfgload_env、ceboot。
+  5. kernel.img 的 Android boot v0 头必须 ramdisk_size=0（内建 initramfs），
+     且 header cmdline 非空并等于 BOOTIMG_CMDLINE。
+  6. dtb.img 固定 54,984 B；release 脚本会用 cmp 校验它与
+     device_trees/meson-g12b-a311d-cainiao-cniot-core.dtb 同源。
+
+--------------------------------------------------------------------------------
+五、未验证项
+--------------------------------------------------------------------------------
+  本资产在「6.18.49 内核 + 20261031 AURKNIX SYSTEM」组合下经实机验证。
+  「CI 同源 6.18.21 KERNEL+SYSTEM + 本 bootkit」组合尚未构建、尚未上电，
+  黄金 DTB 与 6.18.21 内核的绑定关系属工程推断，须由 CI 实跑与板级
+  验收确认。不得据本文件声称新镜像已可启动。
+================================================================================

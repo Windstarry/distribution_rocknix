@@ -346,8 +346,12 @@ pre_make_target() {
 
   cp ${PKG_KERNEL_CFG_FILE} ${PKG_BUILD}/.config
 
-  # Amlogic Android boot images use an external ramdisk, matching CoreELEC.
-  if [ "${DEVICE}" = "S905" -o "${DEVICE}" = "A311D" ]; then
+  # A311D (CAINIAO CNIoT-CORE) uses the verified stage-B chain: initramfs is
+  # built into the kernel and the Android boot image carries ramdisk_size=0.
+  # Only S905 keeps CoreELEC's external ramdisk. An external cpio on A311D
+  # leaves the kernel unable to see the USB boot device before /flash is
+  # mounted ("Unable to find LABEL=ROCKNIX", then poweroff).
+  if [ "${DEVICE}" = "S905" ]; then
     ${PKG_BUILD}/scripts/config --set-str CONFIG_INITRAMFS_SOURCE ""
   else
     ${PKG_BUILD}/scripts/config --set-str CONFIG_INITRAMFS_SOURCE "$(kernel_initramfs_confs) ${BUILD}/initramfs"
@@ -524,8 +528,12 @@ make_target() {
   if [ "${BUILD_ANDROID_BOOTIMG}" = "yes" ] && [ "${DEVICE}" = "S905" -o "${DEVICE}" = "A311D" ]; then
     mkdir -p ${BUILD}/image
     initramfs_add_root_links "${BUILD}/initramfs"
-    (cd ${BUILD}/initramfs && find . | cpio -H newc -o --quiet -R 0:0 > ${BUILD}/image/initramfs.cpio)
-
+    if [ "${DEVICE}" = "S905" ]; then
+      # CoreELEC-style external uncompressed cpio ramdisk.
+      (cd ${BUILD}/initramfs && find . | cpio -H newc -o --quiet -R 0:0 > ${BUILD}/image/initramfs.cpio)
+    fi
+    # A311D: no external ramdisk. devices/A311D/bootloader/mkbootimg builds
+    # a header with ramdisk_size=0 and the complete stage-B cmdline.
     find_file_path bootloader/mkbootimg && source ${FOUND_PATH} initramfs
     mv -f arch/${TARGET_KERNEL_ARCH}/boot/boot.img arch/${TARGET_KERNEL_ARCH}/boot/${KERNEL_TARGET}
   fi
@@ -637,10 +645,10 @@ makeinstall_target() {
         [ -f ${dtb} ] && cp -v ${dtb} ${INSTALL}/usr/share/bootloader/device_trees
       done
     elif [ "${DEVICE}" = "A311D" ]; then
-      mkdir -p ${INSTALL}/usr/share/bootloader/device_trees
-      for dtb in arch/${TARGET_KERNEL_ARCH}/boot/dts/amlogic/meson-g12b-a311d-cainiao-cniot-core*.dtb; do
-        [ -f ${dtb} ] && cp -v ${dtb} ${INSTALL}/usr/share/bootloader/device_trees
-      done
+      # Stage-B: /flash/dtb.img and device_trees come from the verified
+      # bootkit (54,984 B), installed by the u-boot package. Local DTS build
+      # output stays a development artefact and must not reach /flash.
+      :
     else
       for dtb in arch/${TARGET_KERNEL_ARCH}/boot/dts/**/*.dtb; do
         if [ -f ${dtb} ]; then

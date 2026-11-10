@@ -50,9 +50,13 @@ if [ -f $SYSTEM_ROOT/usr/share/bootloader/Generic_cfgload ]; then
   cp -p $SYSTEM_ROOT/usr/share/bootloader/Generic_cfgload $BOOT_ROOT/cfgload
 fi
 
-if [ -f $SYSTEM_ROOT/usr/share/bootloader/Generic_cfgload_env ]; then
-  echo "Updating cfgload_env..."
-  cp -p $SYSTEM_ROOT/usr/share/bootloader/Generic_cfgload_env $BOOT_ROOT/cfgload_env
+# Stage-B verified chain has no cfgload_env / ceboot indirection.
+# aml_autoscript runs cfgload directly via 'autoscr'. If an older install
+# left a cfgload_env on /flash, remove it during the update so the eMMC
+# U-Boot env cannot pick up the legacy ceboot path.
+if [ -f $BOOT_ROOT/cfgload_env ]; then
+  echo "Removing legacy cfgload_env (stage-B chain has no ceboot)..."
+  rm -f $BOOT_ROOT/cfgload_env
 fi
 
 sync

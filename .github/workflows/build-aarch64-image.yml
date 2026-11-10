@@ -305,12 +305,34 @@ jobs:
       - name: Get date
         run: echo "DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV
 
+      # A311D stage-B boot chain gate: an image with the legacy boot chain
+      # (empty cmdline / external ramdisk / ceboot / self-built dtb / AURKNIX
+      # label) black-screens on the board. Fail here instead of publishing it.
+      # Evidence: tools/a311d_aurknix_runnable_proof_20261110.txt
+      - name: Verify A311D stage-B boot chain
+        if: ${{ inputs.DEVICE == 'A311D' }}
+        run: |
+          set -e
+          echo "::group::Static bootkit / build-script check"
+          python3 tools/a311d_ci_bootchain_check.py --repo .
+          echo "::endgroup::"
+          IMG=$(ls -1 target/AURKNIX-*.img.gz 2>/dev/null | head -1)
+          if [ -z "$IMG" ]; then
+            echo "::error::A311D image not found under target/"
+            exit 1
+          fi
+          echo "Checking built image: $IMG"
+          python3 tools/a311d_ci_bootchain_check.py --repo . \
+            --img "$IMG" --skip-integrity \
+            --json target/a311d-bootchain-check.json
+
       - uses: actions/upload-artifact@v4
         with:
           name: AURKNIX-image-${{ inputs.DEVICE }}-${{ env.DATE }}
           path: |
             target/AURKNIX-*.img.gz
             target/AURKNIX-*.img.gz.sha256
+            target/a311d-bootchain-check.json
           compression-level: 0
           if-no-files-found: error
 

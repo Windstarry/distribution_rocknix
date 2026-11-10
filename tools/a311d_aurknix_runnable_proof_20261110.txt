@@ -1,0 +1,246 @@
+================================================================================
+A311D / AURKNIX 系统可运行性论证（第二次，活体取证）
+取证时间：2026-11-10 23:45 ~ 23:55（北京时间）
+取证对象：192.168.31.7  root / rocknix
+系统来源：AURKNIX-A311D.aarch64-20261109-bootsafe-edidmode.img 刷盘后上线
+取证方式：SSH 只读采集 + 本地 .img 离线解析 + 三份 md5 交叉比对
+原始证据：E:/A311d/AURKNIX-image-A311D-20261031/
+          aurknix_live_20261110_2345.txt / _part2.txt / _part3.txt
+          golden_bootchain_extract_20261110.txt
+================================================================================
+
+【结论】
+
+  AURKNIX 在该板上可运行，且已运行到「多用户 + 网络 + 三分区挂载 +
+  SSH 登录」的完整 Linux 系统层，不存在架构性移植障碍。当前状态是
+  「系统可运行、前端未启动」，不是「系统起不来」。
+
+  前端阻断有唯一实锤：运行内核 6.18.49，而 SYSTEM 内的内核模块目录
+  只有 6.18.21，modprobe mali_kbase 报
+  "FATAL: Module mali_kbase not found in directory /lib/modules/6.18.49"。
+  叠加 UI_SERVICE 未赋值、gpu.driver 未设定，essway/sway 均 inactive(dead)。
+
+  由此得到本轮最关键的工程推论：把阶段 B 引导链固化进 CI 产物，同时
+  让 KERNEL 与 SYSTEM 同源（同为 6.18.21），既保留「能进系统」，又消除
+  版本混刷，使前端具备启动条件。这条路径已被本次活体数据双向支持。
+
+--------------------------------------------------------------------------------
+一、取证环境与方法
+--------------------------------------------------------------------------------
+
+  1. 设备：CAINIAO CNIoT-CORE / Amlogic A311D（/proc/device-tree/model）。
+  2. 启动介质：本次实测为 Kingston DataTraveler 3.2，
+     VID:PID = 346d:5678，USB2.0 high-speed(480M)，62.9 GB / 58.6 GiB，
+     走 usb-storage（非 uas）。详见第二节「事实更正」。
+  3. 方法：SSH 执行只读命令（uname、/proc/cmdline、blkid、mount、
+     dmesg、/proc/config.gz、sysfs、systemctl、find、md5sum），
+     未对设备做任何写操作；采集过程中远端两次主动断开 SSH，
+     已用「逐条独立连接 + 重连」补齐，全部命令结果均留有原始记录。
+  4. 交叉比对：活机 /flash 三个引导文件的 md5，与本地
+     AURKNIX-A311D.aarch64-20261109-bootsafe-edidmode.img 离线解析出的
+     字节 md5 逐项比对，三项全等。
+
+--------------------------------------------------------------------------------
+二、数据呈现：可运行性的六组硬证据
+--------------------------------------------------------------------------------
+
+  2.1 内核与在线状态
+    uname -a : Linux A311D 6.18.49 #1 SMP PREEMPT Sun Nov  8 20:02:56 CST 2026 aarch64
+    uptime   : up 15 min, load average 0.00 0.18 0.32；/proc/uptime 916.08
+    IP       : 192.168.31.7/24 (eth0)，SSH 可登录
+    is-system-running : degraded（有服务失败，但系统在运行）
+
+  2.2 分区、卷标与挂载（首启扩容已完成）
+    blkid:
+      /dev/sda1  LABEL="ROCKNIX"  TYPE="vfat"   PARTUUID 5b069283-01
+      /dev/sda2  LABEL="STORAGE"  TYPE="ext4"   PARTUUID 5b069283-02
+      /dev/sda3  LABEL="GAMES"    TYPE="exfat"  PARTUUID 5b069283-03
+    mount:
+      sda1 -> /flash               (ro, vfat)
+      sda2 -> /storage             (rw, ext4)
+      sda3 -> /storage/roms 与 /storage/games-internal (rw, exfat)
+    /flash/fs-resize.log 存在(923 B)；GAMES 第三分区已生成。
+    => boot=LABEL=ROCKNIX 解析成功，initramfs 挂 /flash 成功，
+       这正是 20261110 构建失败的那一步。
+
+  2.3 USB 启动链路（失败日志里缺失的整段，本次完整出现）
+      3.534787  usb 1-1.1: new high-speed USB device number 3 using xhci-hcd
+      3.624508  New USB device found, idVendor=346d, idProduct=5678
+      3.634573  Product: DataTraveler 3.2 / Manufacturer: Kingston
+      3.649688  usb-storage 1-1.1:1.0: USB Mass Storage device detected
+      3.655766  scsi host0: usb-storage 1-1.1:1.0
+      4.676905  scsi 0:0:0:0: Direct-Access Kingston DataTraveler 3.2
+      4.683549  sd 0:0:0:0: [sda] 122880000 512-byte logical blocks (62.9 GB)
+      4.736145  sd 0:0:0:0: [sda] Attached SCSI removable disk
+    对照 20261110 失败日志：3.536 s 枚举 048d:1234 之后直到 14.741 s
+    直接跳到 fsck / Can't lookup blockdev，中间 usb-storage → scsi → sdX
+    整段缺失。两相比对，故障层在内核/设备树侧，不是标签字符串。
+
+  2.4 /proc/cmdline 与黄金 cfgload 逐字一致
+    尾部有效段：
+      bootfromusb boot=LABEL=ROCKNIX disk=LABEL=STORAGE
+      console=ttyAML0,115200n8 console=tty0 no_console_suspend
+      net.ifnames=0 video=HDMI-A-1:D systemd.debug_shell=ttyAML0
+    该串与 20261109 镜像内 cfgload payload 中 setenv bootargs 的内容
+    完全相同 => 经典 cfgload 被 U-Boot 正常执行并追加到 bootargs。
+    （前半段 init=/init ... androidboot.* 来自 eMMC U-Boot env，
+      U-Boot 是「追加」而非「替换」，dmesg 中 "Unknown kernel command
+      line parameters ... will be passed to user space" 属 initramfs
+      消费 boot=/disk= 的正常表现，不是错误。）
+    video=HDMI-A-1:D 是 11-09 修 meson DRM user-defined mode 黑屏的
+    正确写法，非损坏字段。
+
+  2.5 引导链字节三方一致（本次新增的闭环证据）
+                        活机 /flash        本地 GOLD .img     仓库 bootkit
+    cfgload        497 B  1a3a799f88b2...  1a3a799f88b2...   1a3a799f88b2...
+    aml_autoscript 1466 B 21e3fb29c6dd...  21e3fb29c6dd...   21e3fb29c6dd...
+    dtb.img      54984 B  0fee9ffd2a2f...  0fee9ffd2a2f...   0fee9ffd2a2f...
+    /flash 另有：kernel.img 14,215,168 B（Android boot v0，
+    ramdisk_size=0）、kernel2.img、KERNEL、SYSTEM 1,482,866,688 B、
+    SYSTEM.md5、ms_unsupported、cfgload 497 B、无 cfgload_env、无 config.ini。
+    => 实机跑的就是阶段 B 的经典链，且不含 ceboot/cfgload_env。
+
+  2.6 内核形态与设备树（/proc/config.gz、sysfs 实证）
+    CONFIG_INITRAMFS_SOURCE="/home/build/rocknix/.../initramfs"  （内建）
+    CONFIG_INITRAMFS_COMPRESSION_LZO=y
+    CONFIG_SCSI=y  CONFIG_BLK_DEV_SD=y
+    CONFIG_USB_STORAGE=y  CONFIG_USB_UAS=y
+    CONFIG_USB_XHCI_HCD=y  CONFIG_USB_DWC3=y
+    CONFIG_USB_DWC3_MESON_G12A=y  CONFIG_DEVTMPFS_MOUNT=y
+    => initramfs 阶段不依赖任何 .ko；USB 存储驱动全部内建。
+    /proc/device-tree/model = CAINIAO CNIoT-CORE
+    /soc/gpu@ffe40000/compatible = amlogic,meson-g12a-mali,arm,mali-bifrost
+    /soc/gpu@ffe40000/status 缺省（FDT 语义即 okay）
+    => 黄金 54,984 B DTB 的 Bifrost 节点是启用的，固化它不会
+       破坏 libmali / panfrost 双栈目标。
+
+--------------------------------------------------------------------------------
+三、原因分析
+--------------------------------------------------------------------------------
+
+  3.1 为什么「AURKNIX 可运行」成立
+    - rootfs 来自 20261031 AURKNIX CI 构建的 SYSTEM（/etc/release =
+      A311D.aarch64-20261031，BUILD_BRANCH=a311d），在本板上完成了
+      initramfs 挂载、squashfs root、overlay、systemd、网络、SSH。
+    - 三分区布局、首启扩容、exFAT GAMES 均按 AURKNIX 逻辑完成。
+    - 用户态 Mali 栈齐全：/usr/lib/libmali.so.1.9.0、
+      libmali-meson-r51p0-wayland-gbm.so、libMaliVulkan.so、
+      /usr/lib/mali/*、/usr/lib/modprobe.d/mali-gpu-noauto.conf，
+      以及 firmware/arm/mali/* 全在。
+    => 移植缺的不是包、不是驱动、不是 rootfs，而是 KERNEL 与 SYSTEM
+       同源 + 少量启动配置。
+
+  3.2 为什么前端没起来（实锤，非推断）
+    - 运行内核                  : 6.18.49
+    - /usr/lib/kernel-overlays/base/lib/modules/ : 仅 6.18.21
+      （含 mali-bifrost/mali_kbase.ko）
+    - /lib/modules/6.18.49/     : 空
+    - modprobe -n mali_kbase    :
+        FATAL: Module mali_kbase not found in directory /lib/modules/6.18.49
+    - /etc/profile.d/090-ui_service : 不存在
+    - grep UI_SERVICE 仅有 001-functions:193 的引用与 999-export:56 的
+      导出声明，无任何赋值
+    - /storage/.config/gpu.driver : 空
+    - essway.service / sway.service : 均 inactive (dead)、disabled
+    - systemctl is-system-running  : degraded
+    - systemctl --failed 7 项：tmp-assets/cores/database/joypads/
+      overlays/shaders.mount 与 rocknix-report-stats.service，
+      属资产挂载与统计上报，不是 GPU 根因。
+    => 与本仓 11-10 00:24 的判断一致：版本混刷 + 配置缺口，
+       「缺 libmali」是 11-09 23:48 之前的早期误判，已被证伪。
+
+  3.3 本轮对上一轮结论的两处修正
+    a) 盘侧嫌疑降权（原补记九 4.1 列为高权重）：本次成功启动的是
+       普通 USB2.0 U 盘走 usb-storage，与失败日志里 048d:1234
+       CBM2199 属同类路径，却在 6.18.49 下完整生成 sdX。
+       同一条枚举链在 20261110 的 6.18.21 内核下整段缺失，
+       差异更可能来自内核/DTB/启动链组合，而不是「盘太特殊」。
+       注意：三块盘 VID 各不相同，不能据此断言盘完全无关，
+       仍建议保留双盘对插验证作为最终确认手段。
+    b) 「USB 驱动被编成模块」彻底排除：活体 /proc/config.gz 显示
+       USB_STORAGE / UAS / SCSI / BLK_DEV_SD / XHCI / DWC3 全 =y，
+       且内核用内建 initramfs，不依赖 SYSTEM 里的 .ko。
+
+--------------------------------------------------------------------------------
+四、对「把阶段 B 引导链固化进 CI 产物」的推论
+--------------------------------------------------------------------------------
+
+  逐条给出活体依据，说明六项特征为何必须同时保留：
+
+  1) cmdline 完整
+     活机 /proc/cmdline 尾部与黄金 cfgload 的 bootargs 逐字一致，
+     boot=LABEL=ROCKNIX / disk=LABEL=STORAGE 由它提供。
+     20261110 CI 的 kernel header cmdline 全空，且 cfgload 依赖
+     ceboot 二次注入，链条更长更脆。CI 产物应让 header cmdline
+     与 cfgload bootargs 同源且一致，U-Boot 无论「追加」还是
+     「替换」结果都相同。
+
+  2) ramdisk_size=0 / 内建 initramfs
+     活机 CONFIG_INITRAMFS_SOURCE 指向内建 initramfs，
+     kernel.img Android v0 头 ramdisk_size=0，USB 驱动全内建，
+     内核阶段即可枚举启动盘。20261110 CI 用 7,346,176 B 外部
+     ramdisk（cpio 内 0 个 .ko、无 /usr/lib/modules），
+     与实机验证形态不符。
+
+  3) 经典 cfgload / aml_autoscript
+     活机 /flash 为 497 B cfgload（bootargs 硬编码、固定
+     dtb.img、bootm 三段式）+ 1466 B aml_autoscript
+     （sddtb/usbdtb + autoscr，无 ceboot、无 cfgload_env）。
+     CI 现为 3012 B Generic_cfgload + 3078 B cfgload_env(ceboot)
+     + 1382 B aml_autoscript，属另一套设计。
+
+  4) 实机 54,984 B dtb.img
+     活机 /flash/dtb.img md5 0fee9ffd...，与本地 GOLD 及新提取的
+     bootkit 完全一致；其 Bifrost GPU 节点默认 okay、
+     USB regulator 为 regulator-usb-pwr / regulator-usb-switch。
+     CI 自编 80,688 B DTB 的 USB VBUS regulator 属性不同，
+     是本轮 USB 块设备缺失的主要板级嫌疑。
+
+  5) 卷标 ROCKNIX
+     活机 sda1 LABEL="ROCKNIX"，/proc/cmdline boot=LABEL=ROCKNIX，
+     /flash 以 ro 挂载成功。设备级 options 已在 11-10 20:46 提交
+     a57bc4ba2b 覆盖为 ROCKNIX（20261110 镜像构建于 07:34/15:34，
+     早于该提交，故产物仍是 AURKNIX）；该项已固化，重建即生效。
+
+  6) 不引入 ceboot
+     活机 /flash 无 cfgload_env、无 config.ini，aml_autoscript
+     不含 ceboot。CI 的 u-boot/package.mk 会生成
+     Generic_cfgload_env 并写入镜像，须从构建链移除。
+
+  综合：CI 产物的目标形态 = 同源 6.18.21 KERNEL+SYSTEM +
+  上述六项阶段 B 引导链特征。这既让「能进系统」可复现，
+  又消除 3.2 的模块版本错配，是唯一同时满足两个目标的方向。
+
+--------------------------------------------------------------------------------
+五、事实更正与未验证项（必须如实标注）
+--------------------------------------------------------------------------------
+
+  5.1 启动盘身份更正
+      本次上线盘是 346d:5678 Kingston DataTraveler 3.2（62.9 GB），
+      既不是 152d:0583 JMS583 NVMe 盒，也不是 048d:1234 CBM2199。
+      这是本项目记录的第三块盘。请确认是否更换过 U 盘；
+      这会改变「两块盘固定对照」的前提，但不影响第二、四节的
+      可运行性与归因结论（所有结论均基于本次活体机本身）。
+
+  5.2 品牌字符串
+      /etc/os-release 为 OS_NAME="ROCKNIX"、OS_VERSION="20261031"、
+      BUILD_ID=a3758508...、BUILD_BRANCH="a311d"、HW_DEVICE="A311D"。
+      SYSTEM 确实来自 20261031 AURKNIX CI 构建，但 branding 未改。
+      排查时勿据 OS_NAME 误判为社区 ROCKNIX rootfs。
+
+  5.3 未验证项
+      - 本轮为只读取证，未做任何板级改动、未刷盘、未重启。
+      - 「CI 同源 6.18.21 内核 + 黄金 DTB」这一组合尚未构建、
+        尚未上电验证；黄金 DTB 编译自 6.18.49 内核 DTS，
+        与 6.18.21 内核的绑定关系属推断，须由 CI 实跑 + 上电确认。
+      - 前端能否在同源构建后启动，须在刷入新 CI 镜像后单独验收；
+        本轮只能证明当前阻断原因，不能证明修复后一定成功。
+
+================================================================================
+附：本轮新增/引用的证据文件
+  E:/A311d/AURKNIX-image-A311D-20261031/aurknix_live_20261110_2345.txt
+  E:/A311d/AURKNIX-image-A311D-20261031/aurknix_live_20261110_2345_part2.txt
+  E:/A311d/AURKNIX-image-A311D-20261031/aurknix_live_20261110_2345_part3.txt
+  E:/A311d/AURKNIX-image-A311D-20261031/golden_bootchain_extract_20261110.txt
+  projects/ROCKNIX/devices/A311D/bootloader/bootkit/{cfgload,aml_autoscript,dtb.img,SHA256SUMS}
+================================================================================
