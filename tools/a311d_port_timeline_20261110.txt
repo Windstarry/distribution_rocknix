@@ -1,0 +1,311 @@
+================================================================================
+A311D / AURKNIX 移植进展时间线
+截至 2026-11-10 23:20（北京时间 GMT+8）
+分支 a311d    仓库 D:\ProgramData\distribution_rocknix
+镜像根目录 E:\A311d\AURKNIX-image-A311D-20261031\
+================================================================================
+
+0. 一句话结论
+
+   AURKNIX 在 A311D 上「能进系统」的最后一个镜像是
+   AURKNIX-A311D.aarch64-20261109-bootsafe-edidmode.img。
+   它不是 CI 构建产物，而是用 tools/make_a311d_bootable.py 在
+   ROCKNIX-S922X-BOX.aarch64-20261108.img 的已验证引导链上重打包出来的。
+   2026-11-10 为修前端/GPU 栈改为 GitHub Actions 完整重建后，
+   CI 产物把 10-31 就存在的启动链缺陷（空 cmdline + 外部 ramdisk +
+   自编 DTB + 卷标 AURKNIX）原样带了回来，而 bootsafe 的修复只落在
+   重打包工具里、从未固化进构建脚本。因此「20261109 之后修改的镜像
+   一律无法进入系统」——回归点是构建路径切换，不是某一次代码补丁。
+
+1. 阶段总览
+
+   阶段 A  10-30 ~ 11-01  设备移植接入 CI，产出首个完整镜像；CI 启动链带缺陷
+   阶段 B  11-09           bootsafe 重打包，逐项修好启动链；能进系统、进不了前端
+   阶段 C  11-09 深夜     前端/GPU 栈三次归因修正，仓库层修复并推送
+           ~ 11-10 00:24
+   阶段 D  11-10 白天     CI 完整重建（20261110.img）；启动链整体回退，黑屏
+   阶段 E  11-10 傍晚     盘级/离线补丁（卷标、cmdline、三件套）；仍黑屏
+   阶段 F  11-10 22:41    活体串口日志取证，根因收敛到块设备层
+           ~ 23:12
+
+2. 阶段 A：设备移植与 CI 打通（10-30 ~ 11-01）
+
+   10-30 12:47  11877deab7  新增 Amlogic A311D 设备移植、gpudriver dtb、
+                             移植计划（起点）
+   10-30 12:48  34ab034b59  接入 Makefile / config.xml / graphics / linux
+   10-30 12:56  efbf482eaa  A311D 加入 Build workflow 设备矩阵
+   10-30 13:24  f954033bf6  非 Rockchip 构建跳过 dtbselect-windows
+   10-30 17:37  2bca6d60d5  retroarch 设备源
+   10-30 18:35  6bc64bebbf  GH_PAT 步骤守卫 + A311D 模拟器配置
+   10-31 00:41  6656fb28dd  bootloader/update.sh 置为 755
+   10-31 07:48  0da725d206  portaudio 源镜像修复（合入）
+   10-31 08:02  ff3052f860  source-mirror-fallback 合入
+   10-31 11:24  a3758508a4  EMUS_32BIT / pcsx_rearmed-lr 合入
+   10-31 11:49  【产物】AURKNIX-A311D.aarch64-20261031.img
+                 2,198,863,872 B（首个 CI 完整镜像）
+   10-31 22:28  dd82299fef  DTS P2：ethernet / eMMC / WiFi-BT / audio /
+                             fan / WS2812 LED
+   10-31 22:43  a482217e0a  DTS 启用 NPU 节点与 etnaviv 驱动
+   11-01 00:01  11f7a4c170  DTS 补 pwm_d_a_pins 引脚组
+   11-01 00:14  f436bf6d0f  bootimg ramdisk 保持未压缩以适配 stock U-Boot
+
+   本阶段已知缺陷（11-09 日志第 24 行实测）：CI 镜像的
+   kernel header cmdline 为空、ramdisk_size=2,647,778（zstd 外部 ramdisk），
+   上电黑屏。当时尝试「换 EE 菜鸟 DTB」「改未压缩 ramdisk」均无效，
+   后来确认空 cmdline 是关键之一。
+
+3. 阶段 B：bootsafe 重打包，启动链闭环（11-09）
+
+   11-09 13:13  7b1fcfe92c  新增 tools/make_a311d_bootable.py
+                             可复现的「可启动镜像重打包」工具
+   核心做法（只读取证结论，见 11-09 日志第 9~25 行）：
+     完整保留 ROCKNIX-S922X-BOX.aarch64-20261108.img 的引导链，
+     仅替换 SYSTEM squashfs + SYSTEM.MD5；
+     P1 FAT32 卷标 ROCKNIX / P2 ext4 卷标 STORAGE 含 .please_resize_me；
+     kernel.img 为 Android boot image，ramdisk_size=0（内核内嵌 initramfs），
+     cmdline 完整；cfgload 约 497~508 B 经典 CoreELEC 链；
+     dtb.img 54,984 B，md5 0fee9ffd2a2f3cb4a891b71176e3ee6a；
+     四个引导链文件与参考镜像字节级一致。
+
+   11-09 19:18  f0b93a6461  bootsafe 镜像校验 + bring-up probe 工具
+   11-09 19:47  e6f30fe07a  install-stats 上报改为可选、非致命
+   11-09 20:09  3fb94cdbe5  恢复首启标记，使 GAMES 分区能创建
+   11-09 20:04  【产物】20261109-bootsafe-markers.img
+   11-09 20:35  e9cda3509d  USB 标记检查修正
+   11-09 22:03  fc02452837  修 meson DRM user-defined mode 卡死：
+                             video=HDMI-A-1:1920x1080@60 会让
+                             drm_kms_helper 合成 USERDEF mode，被 meson DRM
+                             mode_valid 拒绝 -> KMS 无有效 mode -> 黑屏；
+                             改为 video=HDMI-A-1:D（只启用 connector）
+   11-09 晚间   【产物】AURKNIX-A311D.aarch64-20261109-bootsafe-edidmode.img
+                 2,198,863,872 B（文件系统 mtime 21:48，对应上面 22:03
+                 的 video mode 修复；mtime 为后续复制/覆盖时间，不作为
+                 构建先后依据）
+                 sha256 efd716c4f6680ba16fad46e0a8beda6b611332d5962276845cc2f9f00093af9b
+                 与 markers 版仅 4 个 512 B 扇区不同
+                 （FAT 目录项 size / cfgload / kernel.img header / kernel2.img header）
+                 SYSTEM 与分区表零改动；验收 15 PASS / 0 FAIL
+   11-09 22:21  3f062a4b1e  修 GAMES 分区 MBR 类型，Windows 可识别 exFAT
+   11-09 22:23  145d50d2c3  FAT 标记 --drive 默认只读
+   11-09 23:02  4ac5386858  按实机 DTB 对齐板级 DTS（后续基线）
+
+   实机结果：该盘能进 Linux（192.168.31.7 在线），三分区扩容成功，
+   但进不了前端（EmulationStation 出不了图）。
+   **这是截至目前唯一能进入系统的 AURKNIX 镜像。**
+
+4. 阶段 C：前端 / GPU 栈归因与仓库层修复（11-09 23:48 ~ 11-10 00:24）
+
+   用户最初判断为「没有 libmali 驱动」，经三轮只读取证后修正：
+
+   11-09 23:48  现网 ROCKNIX 20261108（S922X-BOX / 6.18.49）可正常进前端，
+                 实际跑 panfrost + Mesa；/flash/dtb.img 与 bootsafe 同为
+                 54,984 B / 0fee9ffd，仅含 arm,mali-bifrost 节点。
+                 现网 system.cfg:227 有 gpu.driver=panfrost，本仓库无。
+   11-09 23:58  AURKNIX 实机复核（决定性）：
+                 mali_kbase.ko、panfrost.ko、/usr/lib/mali、libEGL_mesa
+                 **本来就已打包在 SYSTEM 里**，「需要打包 libmali」前提不成立。
+                 真根因是 KERNEL 6.18.49（11-08 构建）与 SYSTEM 模块
+                 6.18.21（10-31 构建）**混刷**：模块实际在
+                 /usr/lib/kernel-overlays/base/lib/modules/6.18.21，
+                 vermagic 与运行内核不符，/lib/modules/6.18.49 为空、
+                 modprobe panfrost / mali_kbase 均 FATAL not found；
+                 后果是无 /dev/dri/card1、无 renderD128、无 /dev/mali*，
+                 ES 报 No mali devices found / Could not initialize EGL。
+                 附加缺口：默认 gpu.driver 回落 libmali（应为 panfrost）、
+                 SYSTEM 的 /etc/profile.d 无 UI_SERVICE（systemctl start 无参数）。
+
+   11-10 00:22  c03b9515a7  仓库修复 6 文件：
+                 新增 devices/A311D/filesystem/etc/profile.d/090-ui_service
+                 新增 quirks/platforms/A311D/090-ui_service
+                 改 packages/rocknix/package.mk（A311D 注入 gpu.driver=panfrost）
+                 改 gpudriver/sources/bin/gpu-dtb（回落 dtb.img）
+                 新增 tools/a311d_gpu_stack_check.py
+                 新建 tools/a311d_handoff_20261110.txt
+   11-10 00:24  cfce235290  记录已推送的 commit id
+   以上两个提交已推送 origin/a311d（基线 4ac5386858）。
+   待办当时明确写着：**必须用同一次构建的 KERNEL + SYSTEM 一起重刷**。
+
+5. 阶段 D：CI 完整重建与回归（11-10 白天）
+
+   用户按待办手动触发 GitHub Actions 对 a311d 做完整重建（不是重打包）。
+
+   11-10 07:34  【产物】AURKNIX-image-A311D-20261110/
+                 AURKNIX-A311D.aarch64-20261110.img.gz（1,325,333,969 B）
+   11-10 15:34  【产物】同名 .img（2,198,863,872 B）与 .zip
+   11-10 12:17  708c46093e  DTS GPU 节点翻转，默认 dtb.img panfrost-ready
+   11-10 12:45  f24897ecb4  修正 GPU 节点说明并记录构建断链（已推送，
+                             即当前 origin/a311d）
+
+   本轮实测 20261110 原始镜像的 FAT 引导链：
+     BPB 卷标                AURKNIX
+     kernel.img              18,567,168 B
+       kernel_size           11,218,004
+       ramdisk_size          7,346,176（外部 ramdisk，未压缩 cpio newc）
+       header cmdline        **全空**
+     cfgload                 3,012 B（设 rootopt 后交 ceboot）
+     cfgload_env             3,078 B（ceboot 载入新 DTB 到 dtb_mem_addr）
+     aml_autoscript          1,382 B（bootfromusb 不再自己 fatload+bootm）
+     dtb.img                 80,688 B（cainiao 自编 DTB）
+     config.ini              1,107 B（新链）
+     kernel2.img             无
+     SYSTEM                  1,474,306,048 B
+
+   **回归判定**：空 cmdline + 外部 ramdisk 与阶段 A 记载的 10-31 CI
+   镜像黑屏根因完全一致；cfgload/ceboot/自编 DTB/卷标也是 CI 链而非
+   阶段 B 的参考镜像链。20261109 的修复只存在于重打包工具产出的
+   镜像字节里，没有进入 CI 构建脚本，因此一重建就全部丢失。
+
+   用户实机：刷盘后提示 "unable to lable rocknix" 并黑屏；
+   换新 U 盘仍报 "Unable to find LABEL=ROCKNIX, powering off in 3s"。
+
+6. 阶段 E：盘级 / 离线补丁（11-10 20:29 ~ 22:24）
+
+   11-10 20:29  4d4dfc3b04  新增 tools/a311d_image_verify.py 刷前核查
+   11-10 20:14  补记五：离线检查通过，判定新构建可刷盘
+   11-10 20:38  补记六：黑屏定位到 initramfs mount_common 的
+                         LABEL 挂载失败
+   11-10 20:46  a57bc4ba2b  卷标源码修复：
+                 devices/A311D/options 设 DISTRO_BOOTLABEL=ROCKNIX
+                 Generic_cfgload.src 两处 rootopt 改 LABEL=ROCKNIX
+   11-10 20:52  补记七：发现半改卷标（BPB 仍 AURKNIX）+ 空 cmdline，
+                         新增 tools/a311d_fix_boot_label.py 等长修复
+   11-10 21:17  【产物】20261110-bootfixed.img(.gz)
+   11-10 21:23  1581e9aec0  固化等长修复工具与校验加固
+   11-10 21:50  补记八：SSH 活体对比（192.168.31.7）推翻卷标归因，
+                         改判启动链 / DTB 与 U-Boot env 不配套
+   11-10 22:11  F 盘三件套替换为实机基线：
+                 cfgload 3012->508 B、aml_autoscript 1382->1466 B、
+                 dtb.img 80,688->54,984 B；kernel.img / SYSTEM / 卷标未动
+   11-10 22:15  【产物】20261110-livefixed.img(.gz)
+                 sha256 a3d32edad23f0f5dcaefa0456334224a5e3dd611f45ea8e9f10a504d1bc4f0eb
+   11-10 22:24  04ba351fa8  新增 tools/a311d_restore_boot_chain.py；
+                             image_verify 修 T3/T5、加 T5b/T11 + --ref-chain
+                             livefixed 离线全 PASS，原始 20261110 被 T11 拦截
+
+   实测 livefixed 的引导链：卷标 ROCKNIX、cfgload 508 B、
+   aml_autoscript 1466 B、dtb.img 54,984 B、cmdline 已补齐，
+   但 **kernel.img 仍是 6.18.21 + 外部 7,346,176 B ramdisk、
+   SYSTEM 仍是 20261110 产物**。用户上电后依旧报
+   "Can't lookup blockdev LABEL=ROCKNIX" 并 poweroff。
+
+7. 阶段 F：活体日志取证与根因收敛（11-10 22:41 ~ 23:12）
+
+   用户更正现场事实：两块盘、两套系统的固定对照环境，不是中途换盘。
+     152d:0583  JMicron JMS583 NVMe USB3.2 盒 -> ROCKNIX 20261108
+                （6.18.49），可进系统，192.168.31.7，root/rocknix
+     048d:1234  ITE / Chipsbank CBM2199 USB2.0 U 盘 -> AURKNIX 20261110
+                （6.18.21），失败日志来源，Windows 上为 F:
+
+   活体黄金基线（192.168.31.7 只读取证）：
+     1.526 uas / usb-storage 驱动内建注册
+     2.610 dwc3-meson-g12a USB2 ports:2 / USB3 ports:1
+     2.641 xhci SuperSpeed；2.977 usb 1-1 枚举
+     3.058 Checking disk(s)；3.168 hub 1-1 四口
+     3.513 usb 1-1.1；3.666 152d:0583 NVME USB3.2
+     3.695 scsi host0: uas -> 3.700 scsi 0:0:0:0
+     5.865 sd 0:0:0:0 [sda] 128 GB -> 5.931 Attached SCSI disk
+     /proc/config.gz：USB_STORAGE / USB_UAS / SCSI / BLK_DEV_SD 全 =y
+
+   失败日志：hub 3.084、设备 3.428、描述符 3.518（048d:1234
+   Disk 2.0）与基线时间线几乎逐项对齐，但 3.536 之后到 14.741
+   没有任何该盘的后续内核消息，缺失「usb-storage 绑定 -> scsi host
+   -> sdX」整段；14.74 起 fsck 报 couldn't find matching filesystem /
+   Can't lookup blockdev，最终 Unable to find LABEL 并 poweroff。
+
+   已排除：卷标（F 盘 BPB=ROCKNIX）、文件完整性（kernel.img 与
+   SYSTEM 的 md5 与 .md5 记录一致）、内核 USB 驱动缺失（A311D 与
+   S922X 的 linux.aarch64.conf 完整 diff 仅 4 行，USB/SCSI/PHY 区段一致）、
+   U-Boot 读盘（内核已跑到 printk）。
+   剩余嫌疑：① CBM2199 盘在 6.18.21 下完成不了大容量存储绑定；
+   ② U-Boot 实际传入的 DTB 未用串口确认（device_trees 内仍是
+   80,688 B cainiao DTB，其 USB regulator 多了 5 V 固定约束）。
+
+   11-10 23:12  f8ee099518  补记九 + 新增 tools/a311d_usb_boot_probe.py
+                             （本地提交，未推送）
+
+8. 关键镜像硬对比（本轮从 .img 直接解析 FAT + Android header）
+
+   项目                     20261109-edidmode   20261110 原始   20261110-livefixed
+                            （能进系统）        （进不去）      （仍进不去）
+   BPB 卷标                 ROCKNIX             AURKNIX         ROCKNIX
+   kernel.img               14,215,168 B        18,567,168 B    18,567,168 B
+   kernel_size              14,211,441          11,218,004      11,218,004
+   ramdisk_size             0（内建 initramfs） 7,346,176       7,346,176
+   header cmdline           完整                全空            完整
+   video 参数               HDMI-A-1:D          无              HDMI-A-1:D
+   cfgload                  497 B               3,012 B         508 B
+   cfgload_env              无                  3,078 B         3,078 B（残留）
+   aml_autoscript           1,466 B             1,382 B         1,466 B
+   dtb.img                  54,984 B            80,688 B        54,984 B
+   config.ini               无                  1,107 B         1,107 B（残留）
+   kernel2.img              26,826,752 B        无              无
+   SYSTEM                   1,482,866,688 B     1,474,306,048 B 1,474,306,048 B
+   内核版本                 6.18.49             6.18.21         6.18.21
+
+9. 回归点与根治方向
+
+   9.1 分界线：20261109-bootsafe-edidmode.img（11-09 晚间重打包）
+       -> 20261110.img（11-10 CI 完整重建，07:34 / 15:34）。
+       用户所述「之后修改的镜像无法进入系统」与实测引导链完全吻合。
+
+   9.2 不能简单「保留 20261109 引导链 + 换 20261110 SYSTEM」：
+       20261109 的 KERNEL 是 6.18.49（来自 ROCKNIX 参考镜像），
+       而 AURKNIX 的 SYSTEM 模块是 6.18.21，两者配对会重现
+       阶段 C 的 KERNEL/SYSTEM 混刷，前端依旧起不来。
+       要同时修好「能进系统」与「能进前端」，KERNEL 与 SYSTEM
+       必须同源（同为 6.18.21 或同为 6.18.49）。
+
+   9.3 因此根治方向只有一条：把阶段 B 的引导链特征固化进 A311D
+       的 CI 构建产物，而不是每次刷盘后打补丁：
+         kernel header cmdline 完整（boot=LABEL=ROCKNIX ...
+           video=HDMI-A-1:D）
+         ramdisk_size=0，回到内核内建 initramfs
+         cfgload / aml_autoscript 用经典 CoreELEC 简版
+         dtb.img 使用实机验证的 54,984 B（GPU/USB/EDID 图齐全）
+         BPB 卷标与 DISTRO_BOOTLABEL 统一为 ROCKNIX
+         不引入 ceboot / cfgload_env 新链，device_trees 与
+         dtb.img 保持单一来源
+       这样 CI 重建后 KERNEL(6.18.21) 与 SYSTEM(6.18.21) 同源，
+       GPU 栈修复才可能真正生效。
+
+   9.4 短期验证（不依赖重建）：在 192.168.31.7 的 ROCKNIX 系统上
+       把 CBM2199/AURKNIX 盘插到另一个 USB 口（无损、无需换启动盘），
+       运行 tools/a311d_usb_boot_probe.py，判定良好内核能否生成 sdb、
+       blkid 是否有 LABEL="ROCKNIX"，据此区分盘侧与 AURKNIX 侧问题。
+       或刷 20261109-bootsafe-edidmode.img 到该盘，先固定
+       「这块盘能否启动」这一变量。
+       待澄清：20261109 当时「可进系统」是在 JMS583 盘还是
+       CBM2199 盘上验证的。
+
+10. 提交与推送台账（截至 23:20）
+
+   远程 origin：ssh://git@ssh.github.com:443/Windstarry/distribution_rocknix.git
+   upstream   ：git@github.com:AveyondFly/distribution_rocknix.git
+   origin/a311d 当前指向 f24897ecb4（11-10 12:45 已推送）。
+   本地领先 5 个提交，均未推送：
+     4d4dfc3b04  20:29  镜像刷前核查工具
+     a57bc4ba2b  20:46  卷标源码修复
+     1581e9aec0  21:23  半改卷标 / 空 cmdline 等长修复工具
+     04ba351fa8  22:24  启动链/DTB 不配套，恢复实机验证链
+     f8ee099518  23:12  活体日志收敛，新增双盘取证工具
+     （本文对应提交另计）
+   本机推送需显式
+     GIT_SSH_COMMAND="C:/Windows/System32/OpenSSH/ssh.exe" git push
+
+11. 两处结论修正（备查，避免后续接手人重复排查）
+
+   11.1 「20261109 进不了前端是因为没有 libmali 驱动」——这是
+        11-09 23:48 之前的早期判断。实测 mali_kbase.ko 与
+        /usr/lib/mali 本就在 SYSTEM 中，真因是 KERNEL/SYSTEM
+        版本混刷 + 默认 GPU 栈回落 libmali + UI_SERVICE 缺失。
+   11.2 「video=HDMI-A-1:D 是损坏字段」——本时间线整理前的误判。
+        它是 11-09 修 meson DRM user-defined mode 黑屏的正确写法
+        （tools/a311d_video_mode.py），不得改回 1920x1080@60。
+        现网 /proc/cmdline 里的 1920x1080@60 来自 U-Boot bootargs，
+        与 kernel header 字段来源不同，二者不矛盾。
+
+================================================================================
+相关文档：tools/a311d_handoff_20261110.txt（补记一~十）
+          tools/a311d_runbook.txt
+          .workbuddy/memory/2026-10-31.md / 2026-11-09.md / 2026-11-10.md
+================================================================================

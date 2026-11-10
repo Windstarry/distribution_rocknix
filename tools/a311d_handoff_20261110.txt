@@ -951,13 +951,40 @@ sway/essway active 且 NRestarts 低、gpu_dtb 无悬空引用。
        约束的 DTB，足以在内核阶段改变 USB VBUS，而 U-Boot 阶段不受影响。
        注：2.1 的时间戳一致性使该嫌疑权重低于 4.1，但不能排除。
 
-5. 本轮新发现的独立缺陷（非本次 LABEL 失败主因，列为待修）
-   5.1 F 盘 kernel.img 的 Android header cmdline 为
-       "... video=HDMI-A-1:D systemd.debug_shell=ttyAML0"，
-       其中 "video=HDMI-A-1:D" 明显损坏；现网 6.18.49 的对应字段是
-       "video=HDMI-A-1:1920x1080@60"。疑为补记七等长修复工具遗留，
-       修复时须同步重算 kernel.img.md5。本轮**未擅自改动 F 盘**。
-   5.2 F 盘 cfgload_env(3078 B) / config.ini / device_trees(80,688 B)
+5. 后续核对镜像链后的两处更正（2026-11-10 23:20 修订，覆盖上一版文字）
+   5.1 【更正误判】"video=HDMI-A-1:D" **不是损坏，而是 2026-11-09 修
+       meson DRM user-defined mode 黑屏时有意写入的正确写法**
+       （见 .workbuddy/memory/2026-11-09.md 第 165~176 行、
+        本文 3.6、tools/a311d_video_mode.py）。它只启用 connector、
+       不强制分辨率，避免 drm_kms_helper 合成 DRM_MODE_TYPE_USERDEF
+       后被 meson DRM 的 mode_valid 拒绝。现网 /proc/cmdline 里的
+       "1920x1080@60" 来自 U-Boot bootargs，与 kernel header 的
+       cmdline 字段属不同来源，两者不矛盾。F 盘与 -livefixed.img 的
+       该字段都是补记七等长修复从 20261109 基线复制过来的正确值，
+       **不需要修复，更不能改回 1920x1080@60**。
+       上一版把它列为"独立缺陷/待修"是误判，予以撤销。
+   5.2 【新增决定性证据】本轮实测三份镜像 FAT 引导链（纯 Python 解析）：
+       20261109-bootsafe-edidmode（能进系统）
+         kernel.img 14,215,168 B / kernel_size 14,211,441 /
+         ramdisk_size=0 / cmdline 完整(boot=LABEL=ROCKNIX...video=HDMI-A-1:D)
+         cfgload 497 B / aml_autoscript 1466 B / dtb.img 54,984 B
+         无 cfgload_env、无 config.ini；有 kernel2.img 26,826,752 B
+         BPB=ROCKNIX；SYSTEM 1,482,866,688 B
+       20261110 原始（进不去）
+         kernel.img 18,567,168 B / kernel_size 11,218,004 /
+         ramdisk_size=7,346,176（外部 ramdisk）/ **cmdline 全空**
+         cfgload 3012 B / cfgload_env 3078 B / aml_autoscript 1382 B /
+         dtb.img 80,688 B / config.ini 1107 B；无 kernel2.img
+         BPB=AURKNIX；SYSTEM 1,474,306,048 B
+       20261110-livefixed（三件套替换后）
+         卷标、三件套、cmdline 已补齐，但 kernel.img 仍是
+         6.18.21 + 外部 ramdisk、SYSTEM 仍是 20261110 产物。
+       -> 20261110 原始镜像的"空 cmdline + 外部 ramdisk"与
+          11-09 日志第 24 行记载的 10-31 CI 镜像黑屏根因完全一致。
+          回归不是某个补丁，而是 CI 完整重建把旧缺陷带了回来。
+          完整时间线与回归点判定见
+          tools/a311d_port_timeline_20261110.txt（补记十）。
+   5.3 F 盘 cfgload_env(3078 B) / config.ini / device_trees(80,688 B)
        均为新链残留；现网 aml_autoscript 不引用 ceboot，故当前无害，
        但一旦 U-Boot env 命中 ceboot 就会重新引入新链。
 
@@ -1012,4 +1039,64 @@ sway/essway active 且 NRestarts 低、gpu_dtb 无悬空引用。
    - 需要用户澄清：20261109-bootsafe-edidmode.img 当时"可进系统"
      是在 JMS583 盘还是 CBM2199 盘上验证的。若是后者，
      则 4.1 权重下降、7.2 优先级上升。
+================================================================================
+
+补记十（2026-11-10 23:20，北京时间）：全量时间线整理与回归点判定
+================================================================================
+0. 完整时间线已独立成文：tools/a311d_port_timeline_20261110.txt
+   （阶段 A~F、逐笔提交号、三镜像硬对比表、回归点、根治方向、
+     推送台账、两处结论修正）。本文只记录结论要点，避免重复。
+
+1. 用户确认的事实基线
+   - ROCKNIX 已可正常进入的引导链是整个 AURKNIX 移植的起点。
+   - 最后完善且**能进入 AURKNIX 系统**的镜像：
+     E:\A311d\AURKNIX-image-A311D-20261031\
+     AURKNIX-A311D.aarch64-20261109-bootsafe-edidmode.img
+   - 该镜像进系统后进不了前端，用户最初归因为"没有 libmali 驱动"；
+     11-09 23:58 实机复核后修正为 KERNEL(6.18.49)/SYSTEM(模块 6.18.21)
+     混刷 + 默认 GPU 栈回落 libmali + UI_SERVICE 缺失
+     （mali_kbase.ko 与 /usr/lib/mali 本就在 SYSTEM 里）。
+   - 为修前端编译出
+     E:\A311d\AURKNIX-image-A311D-20261031\AURKNIX-image-A311D-20261110\
+     AURKNIX-A311D.aarch64-20261110.img
+   - **20261109-bootsafe-edidmode 之后修改的镜像一律无法进入系统**；
+     每次修改在 GitHub（origin/a311d）有提交记录。
+
+2. 回归点判定（本轮新增结论，写入时间线文档第 9 节）
+   2.1 20261109 能进系统，是因为它是
+       tools/make_a311d_bootable.py（提交 7b1fcfe92c）在
+       ROCKNIX-S922X-BOX.aarch64-20261108.img 的引导链上重打包的产物：
+       完整保留参考镜像的 kernel.img（6.18.49、ramdisk_size=0、
+       cmdline 完整）、cfgload 497 B、aml_autoscript 1466 B、
+       dtb.img 54,984 B、卷标 ROCKNIX，仅替换 SYSTEM squashfs。
+   2.2 该修复是**镜像级/工具级**的，从未固化进 CI 构建脚本。
+       11-10 为修前端改走 GitHub Actions 完整重建后，CI 产物把
+       10-31 就存在的启动链缺陷原样带回：空 cmdline、
+       外部 ramdisk 7,346,176 B、cfgload 3012 B + cfgload_env/ceboot、
+       aml_autoscript 1382 B、dtb.img 80,688 B、卷标 AURKNIX。
+   2.3 所以回归不是某一次补丁，而是**构建路径从"重打包"切换为
+       "CI 完整重建"**。阶段 E 的 bootfixed / livefixed 都只是盘级
+       补丁，逐项把 20261109 特征搬回当前盘，但没有改变 CI 产物，
+       每次重新构建都会复发。
+   2.4 不能简单"保留 20261109 引导链 + 换 20261110 SYSTEM"：
+       前者 KERNEL 是 6.18.49，后者 SYSTEM 模块是 6.18.21，
+       配对会重现阶段 C 的混刷，前端依旧起不来。
+       唯一根治方向是把 2.1 的引导链特征固化进 A311D 的 CI 构建
+       （cmdline 完整、ramdisk_size=0 内建 initramfs、经典 cfgload /
+       aml_autoscript、实机 54,984 B dtb.img、卷标 ROCKNIX、
+       不引入 ceboot），使 KERNEL 与 SYSTEM 同源。
+
+3. 本轮更正（覆盖补记九上一版文字）
+   - 补记九 5.1 已改写："video=HDMI-A-1:D" 是 11-09 修 meson DRM
+     user-defined mode 黑屏的正确写法，不是损坏字段，不得改回
+     1920x1080@60；现网 /proc/cmdline 的 1920x1080@60 来自
+     U-Boot bootargs，与 kernel header 字段来源不同。
+   - 补记九 5.2 补入三镜像 FAT/Android header 实测数据，其中
+     20261110 原始镜像 cmdline 全空，与 10-31 CI 黑屏根因一致，
+     是 2.2 判定的直接证据。
+
+4. 状态
+   - 本轮只做只读取证与文档整理，未改构建脚本、未改盘、未推送。
+   - origin/a311d 仍为 f24897ecb4；本地领先 6 个提交（详见时间线
+     文档第 10 节）。板级上电验证仍未完成，不得写"已修复"。
 ================================================================================
