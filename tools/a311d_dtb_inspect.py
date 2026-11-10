@@ -197,20 +197,15 @@ def extract_dtb_from_img(path):
             return data
 
         def parse_lfn(entries):
+            # 每个 LFN 目录项含 13 个 UTF-16 码元，未用位置填 0xFFFF。
+            # 早期版本只读前 7 个位置，长文件名会被截断。
             name = ""
             for e in reversed(entries):
-                for i in (1, 3, 5, 7, 9):
+                for i in (1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 26, 28, 30):
                     ch = struct.unpack_from("<H", e, i)[0]
-                    if ch == 0xFFFF:
-                        ch = 0
-                    if ch:
-                        name += chr(ch)
-                for i in (14, 16):
-                    ch = struct.unpack_from("<H", e, i)[0]
-                    if ch == 0xFFFF:
-                        ch = 0
-                    if ch:
-                        name += chr(ch)
+                    if ch in (0, 0xFFFF):
+                        continue
+                    name += chr(ch)
             return name
 
         def walk_dir(cluster, depth=0):

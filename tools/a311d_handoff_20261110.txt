@@ -316,6 +316,11 @@ sway/essway active 且 NRestarts 低、gpu_dtb 无悬空引用。
 
 补记四（2026-11-10）：纠正"本机实测只能 panfrost"归因 + 镜像未吃到 DTS 修复的构建断链
 ================================================================================
+   时效性说明（2026-11-10 20:14 补）：本节第 3 节"这张镜像不能直接刷"
+   针对的是 2026-11-10 上午的同名旧 .img 文件。该文件已于当日 15:34 被
+   新构建替换；新镜像复核结果见补记五（离线检查全部通过，可以刷盘）。
+   不得再据此拦截刷盘；本节其余关于归因纠正与构建链路的内容仍然有效。
+
 1. 纠正错误归因
    此前补记三 2.3 与第三节 3.3 以"本机实测只能用 panfrost 起前端 / libmali
    找不到设备（缺 midgard 节点）"作为硬件结论，此归因错误，现纠正：
@@ -369,4 +374,83 @@ sway/essway active 且 NRestarts 低、gpu_dtb 无悬空引用。
    tools/a311d_dtb_inspect.py：纯标准库 FDT 解析 + 从 .img(MBR+FAT32) 抽取
    dtb.img，列出所有 GPU 节点的 compatible/status/reg。用于刷盘前离线核对
    DTB 节点状态，弥补此前解析脚本的 bug。
+================================================================================
+
+
+补记五（2026-11-10 20:14，北京时间）：20261110 新构建镜像复核 —— 可以刷盘
+================================================================================
+0. 结论
+   新构建镜像（15:34 落盘）离线检查全部通过，可以刷启动盘。
+   补记四第 3 节"这张镜像不能直接刷"针对上午同名旧 .img，该文件已被
+   新构建替换，结论失效。本轮未做板级启动验证，不得写"实机已通过"。
+
+1. 受检文件与同源性
+   目录 E:\A311d\AURKNIX-image-A311D-20261031\AURKNIX-image-A311D-20261110\
+   - AURKNIX-A311D.aarch64-20261110.img        2,198,863,872 B  15:34
+   - AURKNIX-A311D.aarch64-20261110.img.gz     1,325,333,969 B  07:34
+   - AURKNIX-A311D.aarch64-20261110.img.gz.sha256             07:34
+   - AURKNIX-image-A311D-20261110.zip          1,325,334,441 B  15:34
+   时间戳不同但内容同源，实测证据：
+   - .img 与 .img.gz 的 dtb.img / config.ini / cfgload / kernel.img /
+     两个 .md5 清单文件 md5 逐字节一致；SYSTEM 大小同为 1,474,306,048 B。
+   - zip 内 .gz 的 CRC=8F857E91，与磁盘 .gz 的 CRC32 一致。
+   - .gz 的 sha256=3c937777...89b3，与 .sha256 清单一致。
+   故用 .img / .img.gz / .zip 任一份刷盘结果相同。
+
+2. 逐项检查（工具 tools/a311d_image_verify.py，两个源退出码均为 0）
+   2.1 启动分区：MBR 有效，ptype=0x0C，start_lba=32768，FAT32 bps=512、
+       spc=32；根目录 13 项，必需文件齐全（KERNEL.IMG 18,567,168 B、
+       SYSTEM 1,474,306,048 B、DTB.IMG 80,688 B、CONFIG.INI、CFGLOAD）。
+   2.2 DTB（上一轮阻塞项已消除）：
+       /soc/gpu@ffe40000           arm,mali-bifrost   status=okay
+       /gpu_mali_vulkan@ffe40000   arm,mali-midgard   status=disabled
+       与翻转后的仓库 DTS 一致。对照现网可用 DTB(md5 0fee9ffd, 54,984 B)
+       仅 bifrost(okay)、无 midgard。device_trees/ 内只有
+       meson-g12b-a311d-cainiao-cniot-core.dtb(80,688 B)，与 dtb.img 同源。
+   2.3 启动配置：config.ini 中 gpu_dtb 行为注释态（未启用悬空的
+       dtb-panfrost.img）；cfgload 默认 setenv dtbfile "dtb.img"。
+       无悬空 DTB 指向风险。
+   2.4 完整性：KERNEL.IMG / SYSTEM 实测 md5 与镜像内附 .md5 清单一致
+       (55cdbb56...、8064b32f...)，读取字节数与目录项一致；SYSTEM 头
+       magic=hsqs、block_size=524288、comp_id=3(lzma)。
+   2.5 内核：KERNEL.IMG 为 Android boot image(ANDROID! 头)，内嵌版本
+       字符串 6.18.21 (@7190bcd440e7, aarch64-rocknix, gcc-14.2.0)。
+       此前实机阻塞为运行内核 6.18.49 与 SYSTEM 模块 6.18.21 混刷；
+       本镜像 KERNEL 与 SYSTEM 同一次构建、md5 清单自洽，该错配在镜像
+       内部不再成立（SYSTEM 内模块版本仍需实机复核）。
+
+3. 首启前必须执行（沿用第五节第 3 步）
+   3.1 /storage/.config/system.cfg 若残留 gpu.driver=libmali，改为 panfrost
+       或删除该行（升级 --exclude=configs 不会自动纠正）。
+   3.2 删除 /storage/.config/profile.d/999-ui-service（旧用户层覆盖，会
+       压掉 SYSTEM 层 090-ui_service 的 UI_SERVICE 值）。
+   3.3 若 /storage 残留 gpu_dtb=dtb-panfrost.img，清除（本树不产出该
+       变体；gpu-dtb 脚本虽有回落，清掉更稳妥）。
+
+4. 实机验收（刷盘后，tools/a311d_gpu_stack_check.py --live）
+   - uname -r 与 /lib/modules/$(uname -r) 一致，panfrost / mali_kbase
+     模块成对且 vermagic 匹配；
+   - UI_SERVICE 取自 SYSTEM 层 090-ui_service，未被 /storage 覆盖；
+   - gpu.driver=panfrost；/dev/dri/card1 与 renderD128 存在；
+   - 前端正常启动。
+
+5. 本轮仓库改动
+   - 新增 tools/a311d_image_verify.py：刷盘前离线核查（MBR/FAT32、
+     必需文件、DTB 节点、config.ini/cfgload、md5 清单、squashfs 头、
+     内核版本、sha256 清单），支持 .img 与 .img.gz，只读，有 FAIL 时
+     退出码 1。用法：python3 tools/a311d_image_verify.py <image.img|.gz>
+     实跑：新 .img 与 .img.gz 均全部通过、退出码 0。
+   - 修正 tools/a311d_dtb_inspect.py 的 FAT32 LFN 解析（原先只读 13 个
+     UTF-16 码元中的 7 个，长文件名会被截断）。
+   - 同步 devices/A311D/bootloader/config.ini 注释口径为
+     "bifrost-enabled"（纯注释，不影响本次镜像功能，无需重建）。
+   - 补记四加时效性说明，避免旧"禁止刷盘"结论继续误导。
+
+6. 尚未验证 / 独立待办
+   - SYSTEM 为 squashfs+lzma，本机无 unsquashfs/sasquatch/PySquashfsImage，
+     无法离线确认内部 UI_SERVICE、gpu.driver、/lib/modules 与 vermagic。
+     按提交线性推断：DTB 翻转(708c46093e)已进镜像，更早的 c03b9515a7
+     (profile.d + gpu.driver) 亦应在 SYSTEM 内，但须实机复核，不作结论。
+   - libmali 真正可用化仍为独立待办：需实机复测那次切换失败的真实根因
+     （journalctl / dmesg / gpudriver 报错），与 DTB 无关。
 ================================================================================
