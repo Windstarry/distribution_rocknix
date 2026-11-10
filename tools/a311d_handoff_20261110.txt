@@ -825,3 +825,191 @@ sway/essway active 且 NRestarts 低、gpu_dtb 无悬空引用。
      config.ini / cfgload_env 仍在盘上；现网启动链不引用它们，无害。
    - 6.18.21 内核 USB 驱动是否内建未能离线确认（见 4.4）。
 ================================================================================
+
+补记九（2026-11-10 23:05，北京时间）：活体串口日志落地，根因收敛到
+「内核阶段 CBM2199 启动盘没有变成可 lookup 的块设备」
+================================================================================
+0. 本轮输入
+   0.1 用户提供本次上电的完整屏幕/串口日志，结尾为
+       "fsck: couldn't find matching filesystem: LABEL=ROCKNIX"
+       "LABEL=ROCKNIX: Can't lookup blockdev"（连出三行）
+       "Unable to find LABEL=ROCKNIx, powering off and on should correct it"
+       —— 即补记八 5.1/5.2 的 F 盘三件套替换盘上电后的结果，
+         **三件套跨盘复制方案实测无效**，补记八第 7 节 B 方案条件已触发。
+   0.2 用户更正（重要，推翻本轮最初的表述）：不是"同一台设备中途换了盘"。
+       现场是两块盘 + 两套系统的固定对照环境：
+         152d:0583  JMicron JMS583 NVMe USB3.2 硬盘盒 -> ROCKNIX 20261108
+                    （6.18.49），可进系统，192.168.31.7，root/rocknix
+         048d:1234  ITE / Chipsbank CBM2199 USB2.0 U 盘 -> AURKNIX 20261110
+                    （6.18.21），本次失败日志来源，Windows 上挂为 F:
+       由此暴露一个此前从未验证的隐含假设：补记八把"实机验证三件套"
+       从 JMS583/ROCKNIX 盘复制到 CBM2199/AURKNIX 盘，
+       而此前所有活体基线全部取自 JMS583 盘，CBM2199 盘上任何一环
+       都没有被独立验证过。
+
+1. 活体黄金基线（只读采集，192.168.31.7 / 6.18.49）
+   1.1 /proc/cmdline：boot=LABEL=ROCKNIX disk=LABEL=STORAGE ...
+       video=HDMI-A-1:1920x1080@60 ... bootfromusb + 同一串再出现一次
+   1.2 blkid：/dev/sda1 LABEL_FATBOOT/LABEL="ROCKNIX" UUID=0811-0630 vfat
+       （挂 /flash）、sda2 STORAGE ext4、sda3 EEROMS exfat
+   1.3 USB 树：usb1(1d6b:0002,480) / usb2(1d6b:0003,5000) /
+       1-1(05e3:0610 USB2.0 Hub,4 ports) / 1-1.1(152d:0583 NVME USB3.2
+       JMicron, speed=480，即经 USB2.0 hub 降速但走 uas)
+   1.4 dmesg 时间线（关键）：
+       1.526  uas / usb-storage 驱动注册（内建）
+       2.610  dwc3-meson-g12a ffe09000.usb: USB2 ports:2 / USB3 ports:1
+       2.641  xhci-hcd 注册，Host supports USB 3.0 SuperSpeed
+       2.977  usb 1-1: new high-speed USB device number 2
+       3.058  Checking disk(s): LABEL=ROCKNIX LABEL=STORAGE (两遍)
+       3.115  usb 1-1: 05e3:0610 USB2.0 Hub
+       3.168  hub 1-1:1.0: 4 ports detected
+       3.513  usb 1-1.1: new high-speed USB device number 3
+       3.666  usb 1-1.1: 152d:0583 NVME USB3.2 / JMicron
+       3.695  scsi host0: uas
+       3.700  scsi 0:0:0:0: Direct-Access NVME USB 3.2
+       5.865  sd 0:0:0:0: [sda] 250069680 blocks (128 GB)
+       5.931  [sda] Attached SCSI disk
+   1.5 /proc/config.gz：CONFIG_USB_STORAGE=y、CONFIG_USB_UAS=y、
+       CONFIG_SCSI=y、CONFIG_BLK_DEV_SD=y、CONFIG_USB_XHCI_HCD=y、
+       CONFIG_USB_DWC3=y、CONFIG_USB_DWC3_MESON_G12A=y、
+       CONFIG_DEVTMPFS_MOUNT=y、CONFIG_INITRAMFS_COMPRESSION_LZO=y
+       —— 全部内建，initramfs 阶段不依赖任何 .ko。
+
+2. 本次失败日志时间线（用户原文，OCR 有字符粘连，取可辨读部分）
+       Checking disk(s): LABEL=ROCKNIX LABEL=STORAGE (两遍)
+       3.084  hub 1-1:1.0: USB hub found
+       3.085  hub 1-1:1.0: 4 ports detected
+       3.428  new high-speed USB device number 3 using xhci-hcd
+       3.518  New USB device found, idVendor=048d, idProduct=1234,
+              bcdDevice= 2.8
+       3.528  Product: Disk 2.0
+       3.532  Manufacturer: USB
+       3.536  SerialNumber: 7419751033367614176
+       14.741~14.764  fsck: couldn't find matching filesystem:
+              LABEL=ROCKNIX / Can't lookup blockdev（三行）
+       最后    Unable to find LABEL=ROCKNIX ... poweroff
+   2.1 与基线的时间戳几乎逐项对齐（hub 3.08 vs 3.17、设备 3.43 vs 3.51、
+       描述符 3.52 vs 3.67），说明 USB 控制器 / PHY / hub 初始化时序
+       与现网等价，U-Boot 交给内核的 DTB 至少在 USB 控制器部分不是
+       明显缺失或错配。
+   2.2 唯一且致命的差异：基线在 3.695~5.931 有
+       "scsi host0: uas -> scsi 0:0:0:0 -> sd 0:0:0:0 [sda] ->
+        Attached SCSI disk" 完整四步；失败日志在 3.536 之后直到 14.74
+        没有任何该盘的后续内核消息，直接进 fsck 失败。
+       即：USB 设备被枚举（描述符已读），但**没有完成大容量存储绑定、
+       没有生成 sdX、blkid/findfs 无法把 LABEL=ROCKNIX 解析成块设备**。
+   2.3 "Can't lookup blockdev" 是 findfs/blkid 的措辞，含义是
+       "找不到该标签对应的块设备"，不是"标签字符串写错"。
+       这从语义上正式终结了补记六、七的卷标归因路线。
+
+3. 已排除项（本轮逐条实测，均带证据）
+   3.1 卷标：F 盘 raw 卷 BPB(off 71) = "ROCKNIX    "，OEM=mkfs.fat，
+       FAT32、512 B/扇区、32 扇区/簇、2 份 FAT、total_sec=4194288
+       （约 2 GiB）；cfgload / kernel header cmdline 也均为 ROCKNIX。
+   3.2 文件完整性：F 盘 kernel.img 实际 md5 = 39273a88...f2，与
+       kernel.img.md5 记录一致；SYSTEM 实际 md5 = 8064b32f...57，
+       与 SYSTEM.md5 记录一致。不存在半截刷写 / 文件损坏。
+   3.3 内核 USB 存储驱动缺失（本轮一度列为首要嫌疑，已推翻）：
+       a) 6.18.21 kernel.img 是 Android boot image v0，page_size=2048，
+          kernel_size=11,218,004、ramdisk_size=7,346,176（外部 ramdisk），
+          kernel payload 为 lzop（magic 89 4c 5a 4f ...），
+          ramdisk 为**未压缩 cpio newc**。
+       b) 解剖 cpio：66 个条目，0 个 .ko，无 /usr/lib/modules 目录，
+          只有 busybox/bash/splash/consolefonts/init/functions。
+          init 里 MODULE_DIR=/usr/lib/modules 在 initramfs 阶段为空。
+       c) 仓库 projects/ROCKNIX/devices/A311D/linux/linux.aarch64.conf
+          与 devices/S922X/... 做完整 diff：**仅 4 行差异**
+          （CONFIG_RD_ZSTD=y、CONFIG_KERNEL_LZO=y、
+           CONFIG_INPUT_ADC_KEYS=y、CONFIG_DRM_ETNAVIV=y），
+          USB / SCSI / PHY / INITRAMFS 区段完全一致；
+          A311D config 含 CONFIG_SCSI_MOD=y、CONFIG_USB_DWC3_MESON_G12A=y、
+          CONFIG_PHY_MESON_G12A_USB2/USB3_PCIE=y、CONFIG_IKCONFIG_PROC=y。
+       d) 结论：6.18.21 的 USB 存储驱动与现网 6.18.49 同为内建 =y，
+          ramdisk 里没有 .ko 不构成"模块在 SYSTEM 里、initramfs 拿不到"
+          的死锁。补记八 4.4 的"未能确认"至此闭合。
+   3.4 U-Boot 读盘能力：内核已被加载并运行到 printk + initramfs，
+       说明 U-Boot 成功完成 usb start / fatload kernel.img，
+       USB 侧在 bootloader 阶段可用。
+   3.5 048d:1234 的身份（外网核对）：ITE / Chipsbank CBM2199 类
+       通用 USB2.0 U 盘主控，描述符常为 VendorCo ProductCode /
+       "Disk 2.0"、纯数字序列号、100 mA 总线供电，白牌/假容量盘常见；
+       在标准 Linux 上应走 **usb-storage**（而非 uas）并打印
+       "USB Mass Storage device detected -> scsi hostX: usb-storage
+        -> sdX: sdx1"。这正好是本次日志缺失的那一段。
+
+4. 剩余两个嫌疑（离线数据无法再收窄，需一次活体交叉验证）
+   4.1 盘侧：CBM2199 廉价 USB2.0 盘在 6.18.21 内核下完成不了
+       Mass Storage 绑定（VBUS 供电不足 / 主控需更长复位 / 设备掉线 /
+       假容量盘导致块层异常）。JMS583 是 USB3.2 NVMe 盒、走 uas、
+       供电需求与信号路径完全不同，两者不构成等价对照。
+   4.2 板侧：U-Boot 实际传给内核的 DTB 未用串口确认。
+       F 盘 dtb.img 已是现网 54,984 B，但 device_trees/ 内仍是
+       80,688 B cainiao DTB（其 /regulator-usb-pwr、/regulator-usb-switch
+       新增 5 V 固定约束、vin-supply 指向不同，见补记八 3.1）；
+       现网 aml_autoscript 的 usbdtb 在 dtb_mem_addr 未定义时可能回退到
+       "store dtb read"（eMMC 内旧 DTB）。若实际加载的是带新 regulator
+       约束的 DTB，足以在内核阶段改变 USB VBUS，而 U-Boot 阶段不受影响。
+       注：2.1 的时间戳一致性使该嫌疑权重低于 4.1，但不能排除。
+
+5. 本轮新发现的独立缺陷（非本次 LABEL 失败主因，列为待修）
+   5.1 F 盘 kernel.img 的 Android header cmdline 为
+       "... video=HDMI-A-1:D systemd.debug_shell=ttyAML0"，
+       其中 "video=HDMI-A-1:D" 明显损坏；现网 6.18.49 的对应字段是
+       "video=HDMI-A-1:1920x1080@60"。疑为补记七等长修复工具遗留，
+       修复时须同步重算 kernel.img.md5。本轮**未擅自改动 F 盘**。
+   5.2 F 盘 cfgload_env(3078 B) / config.ini / device_trees(80,688 B)
+       均为新链残留；现网 aml_autoscript 不引用 ceboot，故当前无害，
+       但一旦 U-Boot env 命中 ceboot 就会重新引入新链。
+
+6. 已执行的落地（本轮）
+   6.1 新增 tools/a311d_usb_boot_probe.py：SSH 只读采集可用系统上的
+       USB 树、blkid、/proc/partitions、dmesg 绑定链、内核 config，
+       并自动判定"另一块盘在良好内核下能否生成 sdX / LABEL 是否正确"。
+       已实跑，输出 E:/A311d/AURKNIX-image-A311D-20261031/
+       dual_disk_baseline_20261110_2300.txt（当前仅 JMS583 在位）。
+   6.2 活体基线原始数据：同目录 live_probe_20261110_2245.txt。
+   6.3 本补记。未生成新的修复镜像——理由见 7.1。
+
+7. 下一步（按优先级，务必先做 7.1 再决定是否重建）
+   7.1 【一锤定音、无损、不需要换启动盘】在 192.168.31.7 的 ROCKNIX
+       系统上，把 AURKNIX 的 CBM2199 盘插到另一个 USB 口，然后执行：
+         python3 tools/a311d_usb_boot_probe.py --host 192.168.31.7 \
+             --out <报告.txt>
+       判读：
+         a) 好内核也看不到 048d:1234 的 sdX，或 blkid 里没有
+            LABEL="ROCKNIX" -> 盘侧问题（4.1 成立）。
+            处置：换用 JMS583 硬盘盒刷 AURKNIX，或加独立供电 USB HUB；
+                  同时用工具复核该盘 BPB / 分区表 / 刷写完整性。
+         b) 好内核能生成 sdb 且 LABEL="ROCKNIX" 正确 -> 盘与卷标
+            均无问题，故障在 AURKNIX 侧启动链 / DTB / U-Boot env
+            （4.2 成立）。处置走 7.2、7.3。
+   7.2 【最快恢复，补记八 B 方案】把最后一次可进系统的
+       AURKNIX-A311D.aarch64-20261109-bootsafe-edidmode.img
+       刷到 CBM2199 盘，先把"这块盘能否启动"这一变量固定下来。
+       若该盘连 20261109 都起不来，则与 20261110 的代码改动无关，
+       必须换盘/换供电；若能起来，再逐项把 20261110 的改动搬回来。
+   7.3 【若要查 DTB】串口在 U-Boot 停下执行
+         env print; printenv dtb_mem_addr; printenv dtbfile
+       以及内核起来后 fdt 打印 /regulator-usb-pwr 的
+       regulator-min/microvolt / vin-supply，与现网 54,984 B DTB 比对。
+   7.4 【源码层根治（下一轮任务）】若确认为 4.2 / 或 7.2 通过后要
+       保留 20261110 新功能，需在构建层把 A311D 启动链恢复为
+       S922X-BOX 简版（内建 initramfs、ramdisk_size=0、
+       不引入 ceboot/cfgload_env），并让 device_trees 产物与
+       dtb.img 单一来源一致，再干净重建。本轮未改构建脚本。
+
+8. 未验证 / 风险
+   - 本轮仍为活体只读对比 + 离线解剖，**未做板级上电验证**，
+     不得写"已修复"或"实机通过"。
+   - 用户日志为屏幕/OCR 摘录，3.536~14.741 s 之间的内核消息
+     无法 100% 确认全部缺失；但 fsck 的 "Can't lookup blockdev" 与
+     "Unable to find LABEL" 是确定的，块设备不可用这一结论不受影响。
+   - 048d:1234 具体主控型号由外部 USB ID 数据库推断，未在板上实测。
+   - 6.18.21 内核的 IKCONFIG 段（IKCFG_ST @ payload 8,402,759，
+     后随 1f 8b a4 32 ... 非标准 gzip，疑跨 lzop 块边界）仍未解压，
+     故驱动内建结论来自"仓库 config 与现网活体 config 一致"，
+     不是直接读取 6.18.21 的 /proc/config.gz，置信度高但非直接观测。
+   - 需要用户澄清：20261109-bootsafe-edidmode.img 当时"可进系统"
+     是在 JMS583 盘还是 CBM2199 盘上验证的。若是后者，
+     则 4.1 权重下降、7.2 优先级上升。
+================================================================================
