@@ -1013,8 +1013,36 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
   整理性质：仅文档口径统一，无代码改动、无构建脚本改动、
             无设备操作、无新增依赖；14.4 的 [未执行] 项全部保持不变。
 
+14.7 补记：2026-11-12 00:20 构建镜像 Dockerfile:6 失败（CI 阻塞项）
+  现象 [用户提供]：Build Docker Image（build-docker-image.yml ->
+       docker/build-push-action@v4，context=. / file=Dockerfile）在
+       RUN apt-get update --fix-missing && apt-get dist-upgrade -y
+       && apt-get install -y locales sudo 处 exit code 100。
+       该镜像是 ghcr.io/<owner>/rocknix-build:latest，出图 job 依赖它，
+       故此失败会阻塞 14.5 的 P0 出图。
+  取证 [实证-本地]：同一 jammy 22.04 基础镜像、同一条三步命令在本机
+       Docker 完整复现，update（49.4 MB）/ dist-upgrade（7 包）/
+       install（locales、sudo）全部 RC=0，sources.list 正常。
+       因此不是命令语法、包缺失或依赖冲突；runner 侧 apt 网络/源
+       偶发异常（IPv6 连接失败、下载超时、镜像 5xx）为主要嫌疑
+       [推断]，CI 原始 Err:/E: 行尚未取得，不得写成已定位根因。
+  修复 [已完成-源码级]：根 Dockerfile 第 6~8 行改为先写
+       /etc/apt/apt.conf.d/99rocknix-ci（Acquire::Retries=5、
+       http/https Timeout=60、ForceIPv4=true），再执行三步 apt；
+       去掉对 update 无效的 --fix-missing，修正续行 `\` 后缺空格。
+       该配置为 apt 全局配置，对第 20 行大批量安装、第 27 行同样生效。
+       未改基础镜像、包清单、DEBIAN_FRONTEND、tools/docker/ 下
+       4 个 Dockerfile、任何 workflow；未引入额外依赖。
+  验证 [实证-本地]：以修改后前 12 行构造探针 Dockerfile，用本地
+       ubuntu 22.04 实跑 docker build --network=host --progress=plain，
+       BUILD_RC=0；apt-config dump 确认四项配置在后续层仍生效；
+       git diff --check OK、17 处续行均有承接。
+  [未执行] GitHub Actions 上重新构建并推送 ghcr.io 镜像；出图与
+       板级验收（14.4）全部仍未执行。若重跑仍失败，须提供日志中
+       apt 的完整 Err:/E: 行再定位，不要盲目换源或删 dist-upgrade。
+
 ================================================================================
 本文所有结论均带证据分级；[未执行] 项不得在后续汇报中写成已完成。
 第一~九节已按 23:15 状态收敛；第十~十四节按时间顺序保留原始补记，
-其中「全文最新状态」类表述仅在第十四节有效。
+其中「全文最新状态」类表述仅在第十四节有效；14.7 为 11-12 新增补记。
 ================================================================================

@@ -3,7 +3,16 @@ FROM ubuntu:jammy
 ARG DEBIAN_FRONTEND=noninteractive
 SHELL ["/usr/bin/bash", "-c"]
 
-RUN apt-get update --fix-missing\
+# apt 在 GitHub Actions runner 上偶发 IPv6 连接失败 / 下载超时，会让
+# apt-get 以 exit 100 中止整个镜像构建。这里把重试、超时与强制 IPv4
+# 写成 apt 全局配置，使本文件后续所有 apt 调用（含下方大批量安装）同样生效。
+RUN printf '%s\n' \
+      'Acquire::Retries "5";' \
+      'Acquire::http::Timeout "60";' \
+      'Acquire::https::Timeout "60";' \
+      'Acquire::ForceIPv4 "true";' \
+      > /etc/apt/apt.conf.d/99rocknix-ci \
+ && apt-get update \
  && apt-get dist-upgrade -y \
  && apt-get install -y locales sudo
 
