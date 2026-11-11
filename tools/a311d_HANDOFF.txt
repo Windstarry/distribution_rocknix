@@ -65,6 +65,17 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
         盘 C 是目前唯一已知能进 A311D 系统的盘，建议保留作回退/对照盘，
         不要擦除；下线前正常 poweroff（/storage 为 rw ext4）。
 
+  11-11 22:00 补充（Windows 双盘在线实测，见第十节）：
+        F: = 盘 B（048d:1234 / VendorCo / 32 GB），刚刷 20261111，上电失败；
+        G: = 盘 C（346d:5678 / Kingston / 64 GB），仍装 GOLD，可进系统。
+        11-10 失败串口日志的 SerialNumber "7419751033367614176" 与 F 盘
+        PNPDeviceID 中序列号逐字相同，可确认是同一块盘 B。
+  【关键】「内核版本」与「启动盘」两个变量从始至终共线：
+        盘 B 只配过 6.18.21 内核（两次均失败），
+        盘 C 只配过 6.18.49 内核（一次成功）。
+        因此 11-11 的失败不能单独归因于内核，也不能单独归因于盘；
+        必须补一次单变量实验（第十节实验 A/B/C）。
+
 2.3 本机关键路径
   仓库：D:\ProgramData\distribution_rocknix      分支：a311d
   镜像根目录：E:\A311d\AURKNIX-image-A311D-20261031\
@@ -305,14 +316,24 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
   [已完成] 源码改造（六特征）、bootkit 三方 md5 闭环、shell 语法检查、
            git diff --check、静态核查、离线镜像解析、四场景回归、
            CI 闸门接入、历史文档与工作日志。
-  [未执行] GitHub Actions 完整重建（需用户手动触发）。
-  [未执行] 新 CI 镜像刷盘上电、六特征实机确认。
+  [已完成] GitHub Actions 完整重建并出图：20261111 镜像，闸门报告
+           failed=false；本地离线全量核查 35 PASS / 0 FAIL，
+           KERNEL 与 SYSTEM 同为 6.18.21（版本混刷已消除）。
+  [已执行/失败] 20261111 镜像刷盘上电：仍报
+           "Unable to find LABEL=ROCKNIX"，3 s 后自动关机。
+           六特征实机未被验证通过；详见第十节。
   [未执行] 前端启动验收：同源 KERNEL/SYSTEM 后 mali_kbase 能否加载、
            essway/sway 能否拉起、/dev/dri 是否出现。
+  [未执行] 单变量实验 A/B/C（分离「内核版本」与「启动盘」两个共线变量）。
+  [未执行] 本次上电的串口原始日志采集（0~16 s）。
 
-  关键未验证假设 [推断]：黄金 DTB 编译自 6.18.49 内核 DTS，与 CI 同源
-  6.18.21 内核的绑定关系属工程推断，须由 CI 实跑 + 板级上电确认。
-  该假设是下一次构建最主要的失败风险点。
+  未验证假设一 [推断]：黄金 DTB 编译自 6.18.49 内核 DTS，与 CI 同源
+  6.18.21 内核的绑定关系属工程推断，须由单变量实验 + 串口日志确认。
+  未验证假设二 [推断]：CBM2199（盘 B）在这块板子的 Linux 下完成 USB
+  枚举后不绑定 mass storage；该盘从未在 6.18.49 内核下单独验证过。
+  未验证假设三 [推断]：20261111 的 6.18.21 内建 initramfs 与 GOLD 的
+  6.18.49 内建 initramfs 的 mount_common() 逻辑一致；本机无 lzop /
+  python-lzo，离线未能取出脚本明文做文件级对比。
 
 --------------------------------------------------------------------------------
 第七节  接手人最短操作路径
@@ -354,11 +375,17 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
   闸门失败            -> 按 FAIL 项修 CI 源码，不要做盘级补丁。
   能进系统、前端不起  -> 查 KERNEL/SYSTEM 同源与 UI_SERVICE/gpu.driver，
                         参考 5.1 第 2 条与 tools/a311d_gpu_stack_check.py。
-  仍报 Unable to find LABEL=ROCKNIX
-    -> 优先怀疑「6.18.21 内核 + 6.18.49 DTS 编译的黄金 DTB」组合，
-       其次考虑回退到 6.18.49 内核同源构建；可用
-       tools/a311d_usb_boot_probe.py 在可进系统的机器上做盘 C / 盘 B
-       无损对插，区分盘侧与镜像侧。
+  仍报 Unable to find LABEL=ROCKNIX（11-11 已实际发生）
+    -> 不要再改引导链字节、卷标或 cmdline：两盘这些项已字节级一致，
+       刷盘与 md5 亦无误（第十节 2.2 / 2.5 实证）。
+    -> 先补本次 0~16 s 串口日志，确认 usb-storage / scsi host / sdX
+       是否出现；再做单变量实验：
+       实验 A（最低成本）tools/a311d_kernel_bisect.py 把 G 盘的
+         6.18.49 kernel.img 换到 F 盘，固定盘、只变内核；
+       实验 B（快速恢复）先备份 G 盘，再把 20261111 刷到 G 盘 Kingston；
+       实验 C（证据最干净）用 G 盘启动进系统，把 F 盘插另一 USB 口，
+         python3 tools/a311d_usb_boot_probe.py --host <IP> --out <报告>
+       判读表见 tools/a311d_boot_disk_diagnosis_20261111.txt 第四节。
   回退路径            -> 直接刷 GOLD 20261109-bootsafe-edidmode.img，
                         它可进系统但前端不起，作为安全底。
 
@@ -373,6 +400,9 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
     tools/a311d_dtb_compare.py / a311d_dts_check.py   DTB/DTS 对照
     tools/a311d_gpu_stack_check.py           前端 / GPU 栈一致性核查
     tools/a311d_usb_boot_probe.py            SSH 只读双盘取证 + 自动判定
+    tools/a311d_kernel_bisect.py             单变量实验：kernel.img 可逆替换
+                                             （--status/--backup/--apply/--restore，
+                                               默认 dry-run，需 --write 才写盘）
     tools/make_a311d_bootable.py             阶段 B 重打包工具（历史，勿直接用于新构建）
     tools/a311d_fix_boot_label.py            等长卷标/cmdline 修复（盘级，历史）
     tools/a311d_restore_boot_chain.py        三件套恢复（盘级，历史）
@@ -385,6 +415,8 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
     tools/a311d_handoff_20261110.txt         逐轮流水账，补记一~十二
     tools/a311d_port_timeline_20261110.txt   阶段 A~G 完整时间线
     tools/a311d_aurknix_runnable_proof_20261110.txt  可运行性活体论证
+    tools/a311d_boot_disk_diagnosis_20261111.txt
+                                             11-11 双盘单变量归因诊断
     tools/a311d_runbook.txt                  运行手册
     projects/ROCKNIX/devices/A311D/bootloader/bootkit/SOURCES.txt
                                              bootkit 来源、脚本源、变更纪律
@@ -396,9 +428,14 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
 第九节  待办清单（按优先级）
 --------------------------------------------------------------------------------
 
-  P0  （用户侧）手动触发 GitHub Actions，勾选 A311D，确认闸门通过并出图。
-  P0  （用户侧）新镜像刷盘上电，串口确认 USB 枚举与 /flash 挂载。
-  P0  （用户侧）验收前端：mali_kbase 加载、UI_SERVICE、essway/sway、/dev/dri。
+  [已完成] GitHub Actions 出图并通过闸门；本地离线全量核查通过；已刷盘。
+  [已执行/失败] 20261111 在盘 B 上上电，仍报 Unable to find LABEL=ROCKNIX。
+  P0  （用户侧）补采本次上电 0~16 s 串口原始日志，确认 usb-storage /
+       scsi host / sdX 是否出现。
+  P0  （用户侧）执行单变量实验 A / B / C 之一，分离「内核版本」与
+       「启动盘」两个共线变量；判读表见诊断报告第四节。
+  P0  （用户侧）按判读结果选盘交付或修 6.18.21 内核，再验收前端：
+       mali_kbase 加载、UI_SERVICE、essway/sway、/dev/dri。
   P1  CI 实跑后复核 kernel.img header：ramdisk_size=0、cmdline 与
       BOOTIMG_CMDLINE 相等、KERNEL 与 SYSTEM 同为 6.18.21。
   P1  若 6.18.21 + 黄金 DTB 组合失败，评估「用 6.18.21 DTS 重编 DTB」或
@@ -444,6 +481,56 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
   git status --short --branch
   git log --oneline origin/a311d..HEAD
   GIT_SSH_COMMAND="C:/Windows/System32/OpenSSH/ssh.exe" git push origin a311d
+
+--------------------------------------------------------------------------------
+第十节  补记：2026-11-11 22:00 上电失败与双盘单变量归因
+--------------------------------------------------------------------------------
+  本节是截至 2026-11-11 22:20 的最新状态，与前文冲突处以本节为准。
+  完整取证与判读见 tools/a311d_boot_disk_diagnosis_20261111.txt。
+
+10.1 发生了什么
+  20261111 新构建（六特征全落地、KERNEL/SYSTEM 同为 6.18.21）刷到
+  F 盘后上电，仍提示 "Unable to find LABEL=ROCKNIX"，3 s 后自动关机。
+  用户补充确认：能进系统的 20261109 GOLD 盘在 G 盘，两盘同时在线。
+
+10.2 本轮新查出的决定性事实
+  F 盘 = 048d:1234 VendorCo / CBM2199 / 32 GB（即本文档 2.2 的盘 B）；
+  G 盘 = 346d:5678 Kingston DataTraveler / 64 GB（即盘 C）。
+  11-10 失败日志的 SerialNumber 7419751033367614176 与 F 盘 PNP 序列号
+  逐字相同，确认两次失败都是同一块 CBM2199 盘。
+  两盘的 cfgload(497B)、aml_autoscript(1466B)、dtb.img(54984B) md5 三方
+  一致；BPB 与根目录卷标同为 ROCKNIX；cmdline 153 B 逐字节相同；
+  ramdisk_size 同为 0。F 盘与 20261111 .img 关键文件 md5 全一致，刷盘无误。
+  唯一实质差异是 kernel.img（6.18.21 vs 6.18.49，各带内建 initramfs）、
+  SYSTEM、FAT 格式参数（F spc=32 / G spc=8）与 G 盘独有附加文件
+  （KERNEL 26,822,664 B、kernel2.img 26,826,752 B、KERNEL.md5、
+  fs-resize.log）。cfgload 首选 kernel.img，故附加文件不参与本次失败。
+
+10.3 结论口径（必须遵守）
+  不能写「6.18.21 内核有问题」，也不能写「CBM2199 盘坏了」。
+  两个变量共线：盘 B 只配过 6.18.21（两次失败），盘 C 只配过 6.18.49
+  （一次成功）。逻辑上无法分离，需单变量实验。
+  「这份镜像可以刷盘」（21:48）仍然成立，它只覆盖离线完整性与六特征，
+  不代表板级可启动——本轮正好印证了该分级。
+
+10.4 单变量实验（三选一，均未执行）
+  实验 A【最低成本】固定盘 B，只把 G 盘的 6.18.49 kernel.img 换到 F 盘：
+    python tools/a311d_kernel_bisect.py --backup <目录> --dst F
+    python tools/a311d_kernel_bisect.py --apply --dst F --src G --write
+    仍失败 -> 盘侧确证；能进系统 -> 内核侧确证。
+    备份已预建：E:/A311d/.../20261111/bisect_backup_F_20261111/，
+    还原：--restore <目录> --dst F --write。
+  实验 B【快速恢复】先备份 G 盘 FAT 分区文件，再把 20261111 刷到 G 盘
+    Kingston 上电；成功则直接达成「6.18.21 同源 + 前端」目标。
+  实验 C【证据最干净】用 G 盘启动进系统，把 F 盘插另一 USB 口，
+    python3 tools/a311d_usb_boot_probe.py --host <IP> --out <报告>
+    看 6.18.49 内核能否让 CBM2199 生成 sdX。
+
+10.5 仍缺的证据
+  本次上电 0~16 s 串口原始日志；6.18.21 与 6.18.49 内建 initramfs 的
+  文件级对比（本机无 lzop / python-lzo，Docker 本地镜像无
+  squashfs-tools、容器内 apt 超时、WSL 被安全策略禁止）。
+  前端验收、六特征实机确认仍 [未执行]。
 
 ================================================================================
 本文所有结论均带证据分级；[未执行] 项不得在后续汇报中写成已完成。

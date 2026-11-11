@@ -1,0 +1,285 @@
+================================================================================
+A311D / AURKNIX 20261111 新构建上电失败 —— 双盘单变量归因诊断
+================================================================================
+时间      ：2026-11-11 22:00 ~ 22:20（北京时间）
+证据级别  ：[活体只读] Windows 双盘在线取证 + [离线] .img / FAT / Android 头字节解析
+            本轮未刷盘、未改盘、未改仓库构建脚本、未做板级写入
+关联文档  ：tools/a311d_HANDOFF.txt（当前状态总览）
+            tools/a311d_handoff_20261110.txt（补记九、十一、十二，历史证据链）
+            tools/a311d_port_timeline_20261110.txt（阶段 A~G 时间线）
+原始凭证  ：E:/A311d/AURKNIX-image-A311D-20261031/AURKNIX-image-A311D-20261111/
+              image_check_20261111_2148.txt
+            E:/A311d/AURKNIX-image-A311D-20261031/AURKNIX-image-A311D-20261111/
+              disk_identity_20261111.txt（本轮 Windows 磁盘身份采集）
+
+--------------------------------------------------------------------------------
+一、结论摘要
+--------------------------------------------------------------------------------
+1. 本次失败与「阶段 B 六特征」无关。六特征在 F 盘全部落地，且与实机验证盘
+   的引导链字节三方一致（仓库 bootkit / 20261111 .img / 物理盘）。刷盘本身
+   正确，卷标、md5、cmdline、ramdisk_size 均无误。
+
+2. 本轮查出此前一直被忽略的混淆变量：**「能进系统」与「不能进系统」用的是
+   两块不同的 USB 启动盘**，而且「内核版本」与「启动盘」两个变量从始至终
+   共线变化，从未做过单变量对照。
+
+     F 盘（失败）= VendorCo ProductCode / VID_048D:PID_1234 / 32 GB
+                   = ITE / Chipsbank CBM2199 白牌 U 盘主控
+     G 盘（能进）= Kingston DataTraveler 3.2 / VID_346D:PID_5678 / 64 GB
+
+   11-10 那条失败串口日志里的 SerialNumber "7419751033367614176" 与 F 盘
+   Windows PNPDeviceID 中的序列号逐字相同，可确认是同一块 CBM2199 盘；
+   11-10 23:45 AURKNIX 可运行性活体证据中的 346d:5678 就是 G 盘 Kingston。
+
+3. 现有证据权重更偏向「盘侧」：CBM2199 在 Linux 下完成 USB 设备枚举
+   （VID/PID/Product/Manufacturer/SerialNumber 全部读到）之后，始终没有
+   usb-storage 绑定、没有 scsi host、没有 sdX；而 Kingston 在 6.18.49 下
+   完整打印 usb-storage detected → scsi host0 → [sda] Attached SCSI disk。
+   本次 20261111 仍在同一块 CBM2199 上上电，因此复现同一失败是预期结果。
+
+4. 但不得写成「盘已确证为根因」或「6.18.21 内核已排除」。两个变量共线，
+   逻辑上无法分离。必须补一次单变量实验（见第四节）。
+
+--------------------------------------------------------------------------------
+二、数据呈现
+--------------------------------------------------------------------------------
+2.1 两盘硬件身份（Windows CIM / PnP 活体采集，22:00）
+
+  项目              F 盘（本次失败）                  G 盘（实机能进系统）
+  ---------------------------------------------------------------------------
+  型号              VendorCo ProductCode            Kingston DataTraveler 3.2
+  VID:PID           048d:1234                       346d:5678
+  序列号            7419751033367614176             5527331076301611252
+  容量              33,550,917,120 B (32 GB)        62,906,941,440 B (64 GB)
+  接口              USB                             USB
+  盘符/分区         Disk2 / F: (2,147,483,648 B)    Disk3 / G: (2,147,483,648 B)
+  P2                33,554,432 B  Unknown           7,835,739,648 B  Unknown
+  P3                无                              52,914,290,688 B  H: exFAT
+  卷标（Get-Volume）ROCKNIX / FAT32                 ROCKNIX / FAT32
+
+  注：G 盘 P2/P3 是 20261109 首启扩容后的形态（有 fs-resize.log 佐证）；
+      F 盘是刚刷完、尚未首启扩容的原始镜像形态。这是失败的结果，不是原因。
+
+2.2 两盘 FAT / 引导链逐字节对照
+
+  项目                    F 盘（20261111 失败）          G 盘（20261109 能进）
+  ---------------------------------------------------------------------------
+  FAT32 OEM               mkfs.fat                       MTOO4049
+  sec/clus                32 (16 KB 簇)                  8 (4 KB 簇)
+  BPB label (off 71)      'ROCKNIX    '                  'ROCKNIX    '
+  根目录卷标项            'ROCKNIX    '                  'ROCKNIX    '
+  cfgload                 497 B  1a3a799f88b29c284...    497 B  1a3a799f88b29c284...
+  aml_autoscript          1466 B 21e3fb29c6dd0f0e2...   1466 B 21e3fb29c6dd0f0e2...
+  dtb.img                 54984 B 0fee9ffd2a2f3cb4a...  54984 B 0fee9ffd2a2f3cb4a...
+  kernel.img              13,973,504 B b6e2f57e4027...  14,215,168 B dd3cafaa7aa5...
+  SYSTEM                  1,483,100,160 B 63f5dd5f...   1,482,866,688 B fbddc422...
+  config.ini              1195 B 存在                    不存在
+  KERNEL / kernel2.img    无                             26,822,664 / 26,826,752 B
+  KERNEL.md5 / fs-resize  无                             存在
+  Android header ver      0 / page 2048                  0 / page 2048
+  ramdisk_size            0                              0
+  kernel_size             13,969,501                     14,211,441
+  cmdline                 153 B                          153 B（与 F 逐字节相同）
+  内核版本                6.18.21                        6.18.49
+
+  cmdline 两盘逐字一致：
+    boot=LABEL=ROCKNIX disk=LABEL=STORAGE console=ttyAML0,115200n8
+    console=tty0 no_console_suspend net.ifnames=0 video=HDMI-A-1:D
+    systemd.debug_shell=ttyAML0
+
+2.3 U-Boot 启动脚本（两盘 md5 一致，payload 解码）
+
+  cfgload（第一启动路径，硬编码）：
+    if fatload mmc 0:1 0x01000000 dtb.img; then setenv dtb_mem_addr 0x01000000; fi
+    setenv bootargs 'boot=LABEL=ROCKNIX disk=LABEL=STORAGE ... video=HDMI-A-1:D'
+    if fatload mmc 0:1 0x01080000 kernel.img; then bootm 0x01080000; fi
+    if fatload mmc 0:1 0x01100000 kernel2.img; then bootm 0x01100000; fi
+    echo S922X-BOX all boot paths failed
+
+  aml_autoscript（bootfromusb 路径）：
+    setenv bootfromusb 'usb start 0; run cfgloadusb;
+      if fatload usb 0 ${loadaddr} kernel.img; then run usbdtb;
+      setenv bootargs ${bootargs} bootfromusb; bootm; fi'
+
+  判读：两条路径都以 kernel.img 为首选，F 盘有该文件且已成功启动到内核
+  （能打印 initramfs 的 Unable to find LABEL=ROCKNIX），故 kernel2.img 的有无
+  不参与本次失败；usbdtb 在无法 fatload 时会回退 store dtb read，但两盘脚本
+  字节相同、同一台设备 eMMC env 相同，亦非差异项。
+
+2.4 失败日志与成功日志的时间线对照
+
+  11-10 失败日志（用户串口摘录，CBM2199 / 048d:1234）
+    3.084  hub 1-1:1.0: USB hub found, 4 ports detected
+    3.428  new high-speed USB device number 3 using xhci-hcd
+    3.518  New USB device found, idVendor=048d, idProduct=1234, bcdDevice=2.8
+    3.528  1-1.1 Product: Disk 2.0
+    3.536  Manufacturer: USB / SerialNumber: 7419751033367614176
+    ---- 3.536 → 14.741 共 11.2 秒，缺失整段 ----
+          无 "USB Mass Storage device detected"
+          无 "scsi hostX: usb-storage"
+          无 "sd X:0:0:0: [sda] ... Attached SCSI disk"
+    14.741 fsck: couldn't find matching filesystem: LABEL=ROCKNIX
+    14.756 LABEL=ROCKNIX: Can't lookup blockdev（×3）
+    最终  Unable to find LABEL=ROCKNIX, powering off in 3s...
+
+  11-10 23:45 成功活体（AURKNIX 20261109 GOLD / Kingston 346d:5678）
+    3.649  USB Mass Storage device detected
+    3.655  scsi host0: usb-storage
+    4.736  sd 0:0:0:0 [sda] Attached SCSI removable disk
+    /flash 由 sda1 LABEL="ROCKNIX" 成功挂载，系统上线，SSH 可达
+
+  本次 20261111（用户口述）：仍为 Unable to find LABEL=ROCKNIX → 3s 后关机，
+  与上面失败段形态一致；本轮尚未取得本次的串口原始日志。
+
+2.5 三镜像引导链差异矩阵（离线解析）
+
+  项目                GOLD 20261109   20261111 .img   F 盘（刷后）
+  ---------------------------------------------------------------------------
+  BPB 卷标            ROCKNIX         ROCKNIX         ROCKNIX
+  cfgload             497 B 一致      497 B 一致      497 B 一致
+  aml_autoscript      1466 B 一致     1466 B 一致     1466 B 一致
+  dtb.img             54984 B 一致    54984 B 一致    54984 B 一致
+  cmdline             153 B 一致      153 B 一致      153 B 一致
+  ramdisk_size        0               0               0
+  kernel.img          dd3cafaa        b6e2f57e        b6e2f57e
+  SYSTEM              fbddc422        63f5dd5f        63f5dd5f
+  cfgload_env/ceboot  无              无              无
+  6.18.21 / 6.18.49   内核 6.18.49    内核 6.18.21    内核 6.18.21
+
+  判读：F 盘与 20261111 .img 的关键文件 md5 全部一致，刷盘无差错；
+        GOLD 与 20261111 在 U-Boot 层、DTB 层、cmdline 层、卷标层
+        全部字节级相同，唯一实质差异是 kernel.img（内核 + 内建 initramfs）
+        与 SYSTEM，以及 FAT 格式参数与若干附加文件。
+
+--------------------------------------------------------------------------------
+三、原因分析
+--------------------------------------------------------------------------------
+3.1 已排除项（本轮实证）
+
+  [已排除] 卷标不一致：F 盘 BPB(off71) 与根目录卷标项均为 'ROCKNIX    '，
+           cfgload / kernel header cmdline 同为 LABEL=ROCKNIX。
+  [已排除] 刷盘不完整：kernel.img / SYSTEM 全量 md5 与 .md5 记录一致，
+           并与 20261111 .img 逐文件一致。
+  [已排除] 引导链字节错误：三件套与仓库 bootkit、实机 /flash、GOLD 镜像
+           三方 md5 一致。
+  [已排除] 外部 ramdisk / ceboot：ramdisk_size=0，根目录无 cfgload_env。
+  [已排除] KERNEL/SYSTEM 版本混刷：20261111 两者同为 6.18.21（上一轮已证）。
+  [已排除] 内核缺 USB 存储驱动（作为配置层）：A311D 与 S922X 的
+           linux.aarch64.conf 仅 4 行差异，USB_STORAGE / USB_UAS / SCSI /
+           BLK_DEV_SD 均 =y 内建。
+  [已排除] U-Boot 读盘失败：内核已运行到 initramfs 并打印错误。
+  [已排除] 缺 libmali / UI_SERVICE 导致前端不起：与本次失败阶段无关，
+           本次连 /flash 都未挂载。
+
+3.2 剩余嫌疑（按现有证据权重排序）
+
+  嫌疑一（权重高）：启动盘侧 —— CBM2199 (048d:1234) 在这块 A311D 板子
+    的 Linux 下完成 USB 枚举后不绑定 mass storage。
+    依据：两次失败日志（20261110 livefixed、20261111 本次）都是这块盘，
+    且都缺 usb-storage → scsi → sdX 整段；所有成功证据都是 Kingston。
+    可能机理：白牌主控接口/端点描述符异常、UAS 声明但实现有缺陷导致
+    uas 接管后又放弃、VBUS 供电/复位时序、假容量盘。
+    不能排除的反例：CBM2199 从未在 6.18.49 内核下单独验证过。
+
+  嫌疑二（权重中）：6.18.21 内核及其内建 initramfs。
+    依据：GOLD 的 kernel.img 来自 ROCKNIX 官方 20261108 构建（6.18.49 +
+    官方 initramfs），20261111 的来自本地 CI（6.18.21 + 仓库 initramfs）。
+    两者 ramdisk_size 同为 0，但内建 initramfs 内容并不相同，离线解析
+    lzop 压缩流未能取出脚本明文（LZO literal 块只暴露 libblkid 字符串），
+    无法证明两者 mount_common() 逻辑一致。
+    不能排除的反例：20261111 内核从未在 Kingston 盘上验证过。
+
+  嫌疑三（权重低）：FAT 格式参数 / 分区布局 / 附加文件。
+    F 盘 spc=32、OEM mkfs.fat、无 P3；G 盘 spc=8、OEM MTOO4049、有 P3。
+    U-Boot fatload 已成功、Linux 读卷标只依赖 BPB，故不足以解释「找不到
+    块设备」；但 P2/P3 差异是首启扩容结果而非原因。列为观察项。
+
+3.3 关键取证缺口
+
+  [P0] 本次上电的完整串口日志（0~16 秒），需确认三件事：
+       (a) USB 设备 VID/PID 是否仍为 048d:1234；
+       (b) 是否出现 "USB Mass Storage device detected" / uas 相关报错；
+       (c) 是否出现过任何 sdX 或 scsi host。
+  [P0] 一次单变量对照实验（下一节）。
+  [P1] 「6.18.21 内核 + 6.18.49 DTS 编译的黄金 dtb.img」绑定关系，
+       仍是工程推断，未获实机确认。
+
+--------------------------------------------------------------------------------
+四、建议方案（按优先级，均为单变量实验）
+--------------------------------------------------------------------------------
+实验 A【推荐，最低成本、一次上电即可分离变量】
+  操作：固定「盘 = CBM2199 / F 盘」，只把 kernel.img 换成 G 盘已验证的
+        6.18.49 版本（连同 kernel.img.md5），其余文件一律不动。
+  工具：tools/a311d_kernel_bisect.py（本轮新增，默认 dry-run，
+        带 --backup / --restore，完全可逆，不改 G 盘）。
+  判读：
+    A1 仍报 Unable to find LABEL=ROCKNIX
+       → 盘侧确证：同一块 CBM2199 上换回已验证内核也起不来，
+         与镜像内容无关。直接走实验 B 或改用 Kingston 盘。
+    A2 能进系统（前端可能因 6.18.49/6.18.21 混刷仍起不来，不影响判读）
+       → 内核侧确证：故障在 6.18.21 内核或其内建 initramfs，
+         走实验 C / 源码层修内核。
+  优点：不碰唯一回退盘 G，只改 F 盘 2 个文件，可一键还原。
+
+实验 B【快速恢复，若目标是尽快拿到可用系统】
+  操作：先把 G 盘 FAT 分区全部文件备份到 E 盘（约 1.5 GB，保住回退能力），
+        再把 20261111 .img 刷到 G 盘（Kingston），上电。
+  判读：
+    B1 成功进系统且 essway/sway 拉起
+       → 根因是 CBM2199 盘；用户目标（6.18.21 同源 + 前端）直接达成。
+    B2 仍报 Unable to find LABEL=ROCKNIX
+       → 内核侧确证，走实验 C。
+  风险：会覆盖唯一已知能进系统的盘，务必先备份。
+
+实验 C【无损交叉验证，若设备可重新上线】
+  操作：用 G 盘（Kingston / GOLD 6.18.49）启动进系统，把 F 盘
+        （CBM2199）插到另一个 USB 口作为数据盘，执行
+        python3 tools/a311d_usb_boot_probe.py --host 192.168.31.7 --out <报告>
+  判读：6.18.49 内核下 CBM2199 若仍不生成 sdX → 盘侧确证；
+        若能生成 sdb 且 blkid 读到 LABEL="ROCKNIX" → 盘无问题，
+        故障在 6.18.21 内核/DTB 组合。
+  优点：完全不刷盘、不重启启动介质，是分离两个变量最干净的实验。
+
+决策树
+  需要最快拿到可用系统 → 实验 B（先备份 G）
+  不想动回退盘、只需判定根因 → 实验 A
+  设备方便重新上线且愿意插两块盘 → 实验 C（证据最干净）
+  三种实验任一完成后，再决定是「换盘交付」还是「源码层修 6.18.21 内核」。
+
+--------------------------------------------------------------------------------
+五、可逆实验工具用法（tools/a311d_kernel_bisect.py）
+--------------------------------------------------------------------------------
+  # 查看两盘当前内核（只读）
+  python tools/a311d_kernel_bisect.py --status --dst F --src G
+
+  # 备份目标盘的两个文件（写入 E 盘目录，不改盘）
+  python tools/a311d_kernel_bisect.py --backup E:/A311d/.../bisect_backup --dst F
+
+  # 预演替换（不写盘）
+  python tools/a311d_kernel_bisect.py --apply --dst F --src G
+
+  # 实际替换（写盘，需显式 --write）
+  python tools/a311d_kernel_bisect.py --apply --dst F --src G --write
+
+  # 还原
+  python tools/a311d_kernel_bisect.py --restore <备份目录> --dst F --write
+
+  工具内置校验：源/目标盘卷标必须为 ROCKNIX、kernel.img 必须为 ANDROID!
+  格式、替换后重算 kernel.img.md5 并复核、ramdisk_size 与 cmdline 不变。
+
+--------------------------------------------------------------------------------
+六、状态与限制
+--------------------------------------------------------------------------------
+  [已完成] F/G 双盘活体取证、FAT/Android 头离线解析、U-Boot 脚本解码、
+           三镜像差异矩阵、磁盘 VID/PID 与序列号比对、诊断报告与实验工具。
+  [未执行] 实验 A / B / C 任一上电验证；本次串口原始日志采集。
+  [未执行] 6.18.21 内建 initramfs 与 6.18.49 的文件级对比
+           （本机无 lzop / python-lzo，Docker 本地镜像不含 squashfs-tools，
+            容器内 apt 因网络超时失败，WSL 被安全策略禁止）。
+  [不得写] 「已修复」「已定位根因」「6.18.21 内核有问题」「CBM2199 盘坏了」
+           等结论——两个变量共线，必须等单变量实验结果。
+
+  上一轮（21:48）「这份镜像可以刷盘」的结论仍然成立：它只覆盖离线完整性
+  与六特征，不代表板级可启动。本轮正好印证了这一分级。
+
+================================================================================
