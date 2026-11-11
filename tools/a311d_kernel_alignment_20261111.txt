@@ -1,0 +1,239 @@
+================================================================================
+A311D 内核版本对齐 6.18.49 + 目标磁盘分区判定修正
+变更清单与验证结果
+================================================================================
+完成时间：2026-11-11 23:10（北京时间 GMT+8）
+分支    ：a311d
+范围    ：A311D 版本对齐及必要的一致性修复；目标磁盘变更后的三分区
+          错误原因判定与提示内容。不涉及无关平台、无关配置、额外依赖。
+性质    ：源码级改动 + 真实源码离线验证
+          [未执行] 完整 KERNEL/SYSTEM 重建、刷盘上电、板级验收
+
+--------------------------------------------------------------------------------
+一、结论摘要
+--------------------------------------------------------------------------------
+1. A311D 的 linux 包 PKG_VERSION 已由 6.18.21 单独对齐到 6.18.49，
+   S922X / RK3399 / RK3566 保持 6.18.21 不变（原四设备共用 case 已拆分）。
+   [实证-源码]
+
+2. 【本轮最关键发现】只改版本号不足以让镜像可引导。A311D 的
+   linux.aarch64.conf 原本写着 "# CONFIG_SCSI is not set"，且没有
+   CONFIG_BLK_DEV_SD / CONFIG_USB_STORAGE。6.18.49 源码的
+   drivers/usb/storage/Kconfig 明确 "USB_STORAGE depends on SCSI"，
+   Help 还要求 BLK_DEV_SD。这条链缺失，USB U 盘枚举成功却永远不产生
+   sdX，initramfs 自然找不到 LABEL=ROCKNIX。这与 11-10/11-11 失败串口
+   日志（枚举到 048d:1234、之后无 usb-storage / scsi host / sdX）
+   以及实验 A 的活体 dmesg 完全自洽。[实证-源码 + 实证-活体]
+
+   因此本次同步补齐 CONFIG_SCSI=y / CONFIG_BLK_DEV_SD=y /
+   CONFIG_USB_STORAGE=y。这是「引导 + GPU 栈在同一次变更中恢复可用」
+   的必要条件，不是无关配置调整。
+
+3. 5 个 mainline 补丁经 6.18.21 与 6.18.49 双版本 dry-run 全部可应用，
+   无需改动；构建系统对普通文本补丁实际使用 patch -p1（允许 fuzz），
+   不是 git apply。[实证-源码]
+
+4. 目标磁盘变更场景（三分区、P3=0x07 显示 NTFS、未格式化、无盘符）
+   的错误原因判定与提示内容已在 tools/a311d_games_partition_check.py
+   中修正，仅该场景新增 TC-GP-07 / TC-GP-08，其它布局零新增项。
+   [实证-离线单元验证]
+
+5. [不得写]「已修复」「重建完成」「设备已验证引导」「panfrost.ko
+   已加载」「renderD128 已出现」「GPU 栈正常」。
+
+--------------------------------------------------------------------------------
+二、变更清单（逐文件）
+--------------------------------------------------------------------------------
+2.1 projects/ROCKNIX/packages/linux/package.mk
+  原第 69~71 行：
+      S922X|RK3399|RK3566|A311D)  PKG_VERSION="6.18.21"
+  改为两段：
+      S922X|RK3399|RK3566)        PKG_VERSION="6.18.21"   （原样保留）
+      A311D)                     PKG_VERSION="6.18.49"
+  两者 PKG_URL 均沿用 kernel.org v6.x/${PKG_NAME}-${PKG_VERSION}.tar.xz
+  模板，未引入新依赖；并加英文注释说明拆分理由与同源机制。
+  为什么必须拆：该版本号由四个设备共用，全局替换会连带改动
+  S922X / RK3399 / RK3566，超出授权范围。
+
+2.2 projects/ROCKNIX/devices/A311D/linux/linux.aarch64.conf
+  a) 第 3 行版本头注释：6.18.21 -> 6.18.49。
+  b) SCSI 段：# CONFIG_SCSI is not set -> CONFIG_SCSI=y，
+     并新增 CONFIG_BLK_DEV_SD=y（sdX 必需）。
+  c) "USB Device Class drivers" 段新增 CONFIG_USB_STORAGE=y。
+  其余 6970+ 行配置项一字未动，包括
+  CONFIG_DRM_PANFROST=m / CONFIG_DRM_MESON=y /
+  CONFIG_LOCALVERSION="" / CONFIG_USB_DWC3=y /
+  CONFIG_USB_DWC3_MESON_G12A=y / CONFIG_PHY_MESON_G12A_* 等。
+  参考：同项目 RK3566 conf 为 SCSI=y / SCSI_PROC_FS=y /
+  BLK_DEV_SD=y / USB_STORAGE=y；A311D 本次只补三项最小必需项。
+
+2.3 projects/ROCKNIX/devices/A311D/bootloader/bootkit/SOURCES.txt
+  第五节「未验证项」中的版本引用由「CI 同源 6.18.21」同步为
+  「CI 同源 6.18.49」，并注明这是本轮版本对齐后的目标组合，
+  仍标注「尚未构建、尚未上电」，不改写历史实机验证事实。
+  bootkit 的 cfgload / aml_autoscript / dtb.img 与 SHA256SUMS 未动。
+
+2.4 tools/a311d_games_partition_check.py（用户本次追加需求）
+  a) docstring 增补「目标磁盘变更后三分区」场景定义。
+  b) import string（标准库，无新依赖）。
+  c) check_volume 两处失败提示改写：
+     - 打不开卷时补充「F: 可能是 P1(FAT32 boot)，未格式化的
+       0x07 P3 没有盘符」；
+     - 无 EXFAT 签名时不再笼统写「volume is not exFAT」，
+       改为「该盘符可能是 P1，P3 为 0x07/NTFS 标签、
+       未格式化、无盘符」。
+     判定逻辑（PASS if bpb else FAIL）不变。
+  d) 新增 list_exfat_letters()（只读枚举）与
+     check_target_disk_change()：仅当「恰好三个非空分区 +
+     P3=0x07 且 size>0 + 指定卷不是 exFAT + 给了 --disk」时，
+     输出 TC-GP-07（原因判定：0x07 是 IFS/NTFS/exFAT 共用
+     类型标签，不是真 NTFS；mkfs.exfat 未完成导致未格式化、
+     Windows 不分配盘符；F: 指向 P1 而非 P3）与
+     TC-GP-08（提示内容：查 fs-resize.log、不要套用 5.12
+     FAT32 类型错误、不要真格式化成 NTFS、不要归因 RAW 缓存）。
+  e) main() 接收 check_mbr 的返回值并调用新判定，其余流程不变。
+
+2.5 tools/a311d_runbook.txt
+  保留原 5.12（0x0c FAT32 类型错误的历史场景）不动，
+  新增 5.12a 描述本场景的现象 / 错误原因 / 提示内容 / 工具用法 /
+  能力边界（标准库无法把分区映射到盘符）。
+
+2.6 明确未改动及理由
+  - packages/linux-uapi/package.mk 的 6.18.21：这是全局 host
+    sysroot UAPI 头文件包，文件内自述 "independent of the target
+    kernel version"，改它会波及其它所有平台，且不影响
+    KERNEL/SYSTEM 同源。
+  - packages/linux/patches/mainline/ 5 个补丁：双版本 dry-run
+    均通过，补丁内无任何版本字符串，无需同步。
+  - patches/6.12-LTS 的 panfrost 补丁：只在 6.12.79 默认分支
+    追加（package.mk 第 75 行），A311D 不走该分支。
+  - 其它设备 conf、workflow、bootkit 三件套、CI 闸门脚本：
+    与本变更无关，未动。
+
+--------------------------------------------------------------------------------
+三、验证结果（已执行）
+--------------------------------------------------------------------------------
+3.1 静态检查 [实证]
+  bash -n  projects/ROCKNIX/packages/linux/package.mk        OK
+  python -m py_compile tools/a311d_games_partition_check.py  OK
+  python tools/a311d_ci_bootchain_check.py --repo .
+        24 PASS / 0 FAIL / 1 WARN / 1 INFO
+        （WARN 为 cfgload 长度前缀 436 != 425 的 EDID 历史遗留，
+          实机已验证可启动，非本次改动引入）
+  git diff --check                                           OK
+  差异规模：5 个文件，+119 / -9 行。
+
+3.2 真实源码取证 [实证]
+  从清华镜像下载完整内核 tarball：
+    linux-6.18.49.tar.xz  154,627,808 B（kernel.org HEAD 亦为 200）
+    linux-6.18.21.tar.xz  154,425,436 B
+  按构建系统 scripts/unpack 的实际方式做双版本 dry-run：
+    patch -p1 --dry-run（普通文本补丁走 scripts/unpack:196；
+    只有含 GIT binary patch / rename from / rename to 的补丁才走
+    scripts/unpack:194 的 git apply）
+    版本      0001  0002  0003  0004  0005
+    6.18.21   RC=0  RC=0  RC=0  RC=0  RC=0
+    6.18.49   RC=0  RC=0  RC=0  RC=0  RC=0
+    两版本行为完全一致：0002 的 drivers/input/Makefile hunk
+    各需 fuzz 1，其余零 fuzz。结论：补丁无需改动，其它平台不受影响。
+  注：曾额外用 git apply --check 验证，0002 在该路径下会因
+  drivers/input/Makefile 的 "touchscreen.o touch-overlay.o" 上下文
+  失败；但该路径不适用于本仓库的普通文本补丁，故不作为判据，
+  也未据此修改补丁。
+
+3.3 配置项核查 [实证]
+  解析 6.18.49 源码 1880 个 Kconfig* 文件，共 21,394 个符号；
+  A311D conf 有 5,286 个 CONFIG_ 符号。
+  - conf 中「源码无 Kconfig 定义」仅 3 个：CHARGER_RK818、
+    INPUT_ADC_KEYS、INPUT_POLLDEV；后两个由 mainline 补丁的
+    Kconfig hunk 提供，属未打补丁源码的假阳性，CHARGER_RK818
+    是 Rockchip 残留，oldconfig 会丢弃，均无影响。
+  - 关键项在 conf 与 6.18.49 源码中均存在：
+    DRM_PANFROST / DRM_MESON / SCSI / EXFAT_FS / NTFS3_FS。
+  - 6.18.49 drivers/usb/storage/Kconfig 原文：
+      config USB_STORAGE  tristate ...  depends on SCSI
+      "you probably also need ... (BLK_DEV_SD)"
+    -> 补齐三项后依赖链闭合。
+  - A311D conf 已具备 USB 主机侧全部要件（USB_DWC3=y、
+    USB_DWC3_MESON_G12A=y、XHCI/EHCI/OHCI、PHY_MESON_G12A_*），
+    与失败日志「能枚举 USB 设备」一致，缺的只是存储绑定链。
+  同项目 RK3566 conf 作对照：SCSI=y / SCSI_PROC_FS=y /
+  BLK_DEV_SD=y / USB_STORAGE=y。
+
+3.4 分区判定离线单元验证 [实证]
+  构造 6 组输入，检查新增判定的触发范围：
+    三分区 + P3=0x07 + 卷非 exFAT        -> TC-GP-07 FAIL + TC-GP-08 NOTE
+    两分区                                -> 零新增项
+    P3=0x0c（5.12 历史场景）             -> 零新增项
+    P3=0x07 但卷已是 exFAT               -> 零新增项
+    未给 --disk（parts=None）             -> 零新增项
+    四个非空分区                          -> 零新增项
+  真实只读运行 --volume F:：首扇区 eb58906d6b66732e666174
+  = "mkfs.fat"（FAT32 P1），提示已指向 P1/P3 场景；
+  未给 --disk 时不产生 TC-GP-07/08，符合预期。
+  本机只读扫描另见 G: 为 FAT32、H: 为 EXFAT、物理盘 MBR 因
+  无管理员权限读不到；这些属于其它磁盘，判定逻辑未受影响。
+
+3.5 KERNEL/SYSTEM 同源机制 [实证-源码]
+  package.mk 第 156 行把 ${PKG_VERSION} 写入 .scmversion；
+  第 623/626 行 kernel_make ... modules_install 把同一
+  ${PKG_BUILD} 源码树产出的模块装到
+  ${INSTALL}/$(get_kernel_overlay_dir)。因此 KERNEL 与 SYSTEM
+  模块目录版本由同一个 PKG_VERSION 单点驱动，对齐后天然同源，
+  不再出现 6.18.49 内核配 6.18.21 模块的版本混刷。
+
+--------------------------------------------------------------------------------
+四、未执行项与交付边界（必须如实转述）
+--------------------------------------------------------------------------------
+  [未执行] 完整 KERNEL/SYSTEM 重建（make image）：发行版构建依赖
+           GitHub Actions 的 ubuntu-24.04 runner、交叉工具链、
+           ccache 与预构建 artifacts，需数小时；本机为 Windows +
+           Docker Desktop，容器镜像缺 bc/bison/flex 且为 arm64
+           平台，不具备等价重建环境。
+  [未执行] 刷盘上电、设备可正常引导验证。
+  [未执行] panfrost.ko 加载验证、/dev/dri/renderD128 出现验证、
+           sway/ES 硬件渲染与流畅度验收。
+  [未执行] 6.18.49 完整 oldconfig 差异比对（已做 Kconfig 符号与
+           依赖核查，但未跑 make olddefconfig）。
+  [未执行] 活机 SSH 复采 GOLD 内核 config（22:39 后设备侧连接
+           被重置，23:0x 重试超时；ping 通、非宕机）。
+  因此本次交付为「源码级版本对齐 + 一致性修复 + 离线实证」，
+  不是「重建完成 / 修复完成」。
+
+--------------------------------------------------------------------------------
+五、用户侧执行步骤与验收清单
+--------------------------------------------------------------------------------
+  P0  在 GitHub Actions 手动触发 build-aarch64-image.yml，
+      DEVICE=A311D，出图后确认：
+        - kernel.img 版本串命中 6.18.49、ramdisk_size=0、
+          cmdline 153 B 完整；
+        - KERNEL 与 SYSTEM 模块目录同为 6.18.49；
+        - python tools/a311d_ci_bootchain_check.py
+            --repo . --img <img> --skip-integrity --json <报告>
+          全 PASS。
+  P0  刷盘前完整备份 F 盘当前组合；G 盘（Kingston / GOLD）
+      继续保留为唯一回退盘，不擦除。
+  P0  刷盘上电，采 0~16 s 串口日志，确认：
+        usb-storage detected -> scsi host0 -> [sda] Attached SCSI
+        removable disk -> mount LABEL=ROCKNIX 成功。
+  P0  进系统后逐项验收：
+        uname -r                      # 期望 6.18.49
+        ls -d /lib/modules/$(uname -r) && ls -l /lib/modules/$(uname -r)/modules.dep
+        modprobe -n panfrost; lsmod | grep -Ei 'panfrost|mali'
+        ls -la /dev/dri/             # 期望出现 renderD128
+        systemctl is-system-running
+        systemctl show sway.service essway.service --property=ActiveState,SubState
+        python tools/a311d_gpu_stack_check.py --live <probe dump>   # 期望 VERDICT PASS
+        dmesg | grep -iE 'panfrost|usb-storage|scsi host'
+      并目视确认 HDMI 画面流畅度（对比当前 4K 软件渲染的卡顿）。
+  P1  若仍走软件渲染，先按 1080p 可逆对照分离分辨率因素：
+        SWAYSOCK=/run/0-runtime-dir/sway-ipc.0.sock swaymsg \
+          output HDMI-A-1 mode 1920x1080@60Hz
+  P1  修 /flash/kernel.img.md5 同步逻辑（本轮已采到旧记录仍指向
+      6.18.21），避免 OTA 校验踩坑。
+  P2  libmali / mali_kbase vendor 栈单独验收：本次对齐只保证
+      panfrost 开源栈可用，不能把两者混为一谈。
+
+================================================================================
+本文所有结论均带证据分级；[未执行] 项不得在后续汇报中写成已完成。
+================================================================================

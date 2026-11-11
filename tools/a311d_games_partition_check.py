@@ -14,6 +14,19 @@ driver and reports "damaged / not formatted". exFAT must use type 0x07.
 This tool only reads. It never writes to the disk or the volume.
 Python 3 standard library only.
 
+Target-disk-change scenario (2026-11-11):
+  The USB stick is removed, a new target disk is attached and Windows assigns
+  F: to it. The disk has three MBR partitions; P3 carries type 0x07, which
+  Windows displays as "NTFS" although it is only the shared IFS/NTFS/exFAT
+  partition-type tag written by fs-resize ("mkpart primary ntfs"). If the
+  partition was created but mkfs.exfat did not finish, P3 has no valid
+  filesystem, Windows reports "not formatted" and assigns no drive letter.
+  In that case --volume F: points at P1 (FAT32 ROCKNIX boot), not at P3, and
+  the failure must not be attributed to the 5.12 FAT32-type bug, a stale RAW
+  cache, or a real NTFS filesystem. Only this scenario gets the extra
+  TC-GP-07/08 diagnosis; MBR parsing, exFAT BPB/label handling, P1/P2 layout
+  checks and all other disk/partition behaviour are unchanged.
+
 Usage:
   python a311d_games_partition_check.py --volume G:
   python a311d_games_partition_check.py --volume G: --disk 2
@@ -26,6 +39,7 @@ the MBR section is reported as SKIP (the volume section still works).
 import argparse
 import json
 import os
+import string
 import struct
 import sys
 
@@ -121,12 +135,18 @@ def check_volume(rep, letter):
         head = read_at(path, 0, 4096)
     except OSError as e:
         rep.add("TC-GP-01", "FAIL", "cannot open %s: %s" % (path, e),
-                "plug the USB drive back in; Windows may still cache a RAW volume")
+                "plug the USB drive back in; Windows may still cache a RAW "
+                "volume. After a target-disk change, %s may instead be P1 "
+                "(FAT32 boot) while an unformatted 0x07 P3 has no drive letter"
+                % letter)
         return None
     bpb = parse_exfat(head)
     rep.add("TC-GP-01", "PASS" if bpb else "FAIL",
             "%s boot sector %s" % (path, head[:11].hex() if head else "empty"),
-            "" if bpb else "no EXFAT signature - volume is not exFAT")
+            "" if bpb else
+            "no EXFAT signature on this drive letter; after a target-disk "
+            "change it can be P1 (FAT32 boot), while P3 is 0x07/NTFS-tagged, "
+            "unformatted and has no drive letter")
     if not bpb:
         return None
 
@@ -197,6 +217,53 @@ def check_mbr(rep, number):
     return parts
 
 
+def list_exfat_letters():
+    """Read-only: drive letters whose first sector carries the exFAT magic."""
+    found = []
+    for d in string.ascii_uppercase:
+        try:
+            head = read_at(volume_path(d), 0, 512)
+        except OSError:
+            continue
+        if len(head) >= 11 and head[3:11] == EXFAT_MAGIC:
+            found.append(d)
+    return found
+
+
+def check_target_disk_change(rep, letter, parts, bpb):
+    """Extra diagnosis for the target-disk-change scenario only:
+    three MBR partitions, P3=0x07 (shown as NTFS), unformatted, no drive
+    letter. Every other disk/partition layout returns without any report
+    item, leaving the existing checks untouched.
+    """
+    if not parts or bpb is not None:
+        return
+    present = [p for p in parts if p["type"] != 0x00]
+    if (len(present) != 3 or parts[2]["type"] != 0x07
+            or parts[2]["size"] == 0):
+        return
+    others = [d for d in list_exfat_letters() if d != letter.rstrip(":\\").upper()]
+    rep.add("TC-GP-07", "FAIL",
+            "three-partition target disk: P3=0x07 shown as NTFS, no valid "
+            "filesystem, no drive letter",
+            "0x07 is only the shared IFS/NTFS/exFAT partition-type tag "
+            "written by fs-resize 'mkpart primary ntfs'; it is NOT a real "
+            "NTFS filesystem. mkfs.exfat did not finish, so P3 has no valid "
+            "BPB/FAT and Windows reports 'not formatted' and assigns no "
+            "drive letter. %s is P1 (FAT32 ROCKNIX boot), not P3." % letter)
+    rep.add("TC-GP-08", "NOTE",
+            "correct failure reason here: NTFS tag + unformatted + no drive "
+            "letter",
+            "check /flash/fs-resize.log for 'mkfs.exfat -n GAMES' and "
+            "'exFAT format complete!'; if absent, reflash or re-run "
+            "first-boot resize. Do not attribute this to the 5.12 "
+            "FAT32-type error, do not format P3 as real NTFS, and do not "
+            "blame a stale RAW cache. Other exFAT volumes on this host: %s "
+            "(may belong to a different physical disk; this tool cannot map "
+            "partitions to drive letters without WMI)."
+            % (", ".join(others) or "none"))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -212,13 +279,15 @@ def main():
     print("check  : volume %s, disk %s (read-only)" %
           (args.volume, args.disk if args.disk is not None else "n/a"))
     bpb = check_volume(rep, args.volume)
+    parts = None
     if args.disk is not None:
-        check_mbr(rep, args.disk)
+        parts = check_mbr(rep, args.disk)
     else:
         rep.add("TC-GP-04", "SKIP", "no --disk given, MBR type not checked",
                 "add --disk N (administrator) to verify P3 type 0x07")
         rep.add("TC-GP-05", "SKIP", "no --disk given")
         rep.add("TC-GP-06", "SKIP", "no --disk given")
+    check_target_disk_change(rep, args.volume, parts, bpb)
 
     n = rep.summary()
     verdict = "FAIL" if n.get("FAIL") else "PASS"

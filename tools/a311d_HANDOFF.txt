@@ -2,10 +2,11 @@
 A311D / AURKNIX 移植交接文档（当前状态总览）
 ================================================================================
 生成时间：2026-11-11 00:30（北京时间 GMT+8）
-最近更新：2026-11-11 22:45（第十三节，HDMI 有画面但卡顿的渲染层归因）
+最近更新：2026-11-11 23:10（第十四节，A311D 内核版本对齐 6.18.49）
 文档定位：接手人第一阅读入口。本文自包含，覆盖并取代此前各轮口头结论。
-最新状态：以第十三节为准；卡顿归因报告见
-          tools/a311d_render_performance_20261111.txt
+最新状态：以第十四节为准；变更清单与验证结果见
+          tools/a311d_kernel_alignment_20261111.txt
+          卡顿归因报告见 tools/a311d_render_performance_20261111.txt
           活体验收报告见 tools/a311d_live_acceptance_20261111.txt
           实验 A 结果报告见 tools/a311d_experiment_a_result_20261111.txt
 历史流水账：tools/a311d_handoff_20261110.txt（1264 行，补记一~十一）
@@ -812,6 +813,85 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
       修 .md5 同步逻辑；F 盘当前状态整盘备份、G 盘保留回退。
   P1  22:39 后设备 SSH 连接被重置（ping 1 ms 通、非宕机），
       推测与 ES 单核满载 + sshd 连续连接限流有关，补采需等空闲。
+
+--------------------------------------------------------------------------------
+第十四节  补记：2026-11-11 23:10 内核版本对齐（全文最新状态）
+--------------------------------------------------------------------------------
+  本节是全文最新状态，与前文冲突处以本节为准。
+  完整变更清单与验证结果：tools/a311d_kernel_alignment_20261111.txt
+
+14.1 已完成（源码级，非重建）
+  1) packages/linux/package.mk：拆出 A311D 单独 case，
+     PKG_VERSION 6.18.21 -> 6.18.49；S922X/RK3399/RK3566
+     保持 6.18.21（原四设备共用 case，禁止全局替换）。
+  2) devices/A311D/linux/linux.aarch64.conf：版本头改 6.18.49，
+     并补齐引导必需的存储链 CONFIG_SCSI=y /
+     CONFIG_BLK_DEV_SD=y / CONFIG_USB_STORAGE=y；其余 6970+
+     行未动，CONFIG_DRM_PANFROST=m 等保留。
+  3) bootkit/SOURCES.txt 第五节版本引用同步为 6.18.49，
+     仍标注「尚未构建、尚未上电」。
+  4) 目标磁盘变更场景（三分区 / P3=0x07 显示 NTFS /
+     未格式化 / 无盘符）：tools/a311d_games_partition_check.py
+     的两处失败提示改写，新增仅在该场景触发的
+     TC-GP-07（原因判定）与 TC-GP-08（提示内容）；
+     tools/a311d_runbook.txt 新增 5.12a，5.12 原文不动。
+  5) 未改：linux-uapi（全局 UAPI，独立于目标内核版本）、
+     5 个 mainline 补丁、6.12-LTS 补丁、其它设备 conf、
+     workflow、CI 闸门、bootkit 三件套与 SHA256SUMS。
+
+14.2 本轮最关键发现（覆盖此前「内核版本差异」的表述）
+  A311D conf 原本是 "# CONFIG_SCSI is not set"，且没有
+  BLK_DEV_SD / USB_STORAGE。6.18.49 源码 drivers/usb/storage/Kconfig
+  明确 USB_STORAGE depends on SCSI 且需 BLK_DEV_SD。A311D 的
+  DWC3/XHCI/PHY 本来就齐，所以 USB 能枚举；缺的是
+  SCSI -> BLK_DEV_SD -> usb-storage -> sdX 这条绑定链，
+  这正是「Unable to find LABEL=ROCKNIX」的根因，与 11-10
+  失败日志、实验 A 活体 dmesg 完全自洽。
+  => 只对齐版本号而不补这三项，重建后仍无法引导。
+  => 此前「6.18.21 kernel.img 内容差异」应据此细化为
+     「CI 内核配置缺 USB 大容量存储链」，不是稳定分支小版本缺陷。
+
+14.3 验证结果 [实证]
+  静态：bash -n OK、py_compile OK、
+        a311d_ci_bootchain_check.py --repo . = 24 PASS / 0 FAIL /
+        1 WARN（cfgload EDID 长度前缀历史遗留）、git diff --check OK，
+        共 5 文件 +119/-9 行。
+  源码：下载 6.18.49(154,627,808 B) 与 6.18.21(154,425,436 B)
+        完整 tarball；按 scripts/unpack:196 实际的 patch -p1
+        --dry-run 双版本 5/5 补丁 RC=0（0002 各需 fuzz 1，
+        两版本一致）。注：git apply --check 会让 0002 失败，
+        但该路径只用于 binary/rename 补丁（scripts/unpack:194），
+        不构成判据，故未修改任何补丁。
+  配置：解析 6.18.49 的 1880 个 Kconfig / 21,394 符号，
+        关键项 PANFROST / MESON / SCSI / EXFAT / NTFS3 均存在；
+        conf 中仅 3 个符号无源码定义（两个由补丁提供、
+        CHARGER_RK818 为残留）。同项目 RK3566 conf 佐证存储链。
+  同源：package.mk:156 写 .scmversion、:623/626 同树
+        modules_install，版本由 PKG_VERSION 单点驱动。
+  分区：离线 6 组布局验证，仅目标场景产生 TC-GP-07/08，
+        其余 5 组零新增项；真实 --volume F: 首扇区为
+        "mkfs.fat"（P1），提示已准确对应 P3 状态。
+
+14.4 [未执行]（不得写成已完成）
+  完整 KERNEL/SYSTEM 重建（需 GitHub Actions ubuntu-24.04
+  runner / 交叉工具链 / ccache / artifacts，本机 Windows +
+  Docker Desktop 不具备等价环境）、刷盘上电、设备引导验证、
+  panfrost.ko 加载、renderD128、硬件渲染与流畅度验收、
+  make olddefconfig 实跑、活机 GOLD config 复采（SSH 超时）。
+  禁止表述：「已修复」「重建完成」「设备已验证引导」
+            「panfrost 已加载」「renderD128 已出现」。
+
+14.5 下一步
+  P0 用户手动触发 build-aarch64-image.yml（DEVICE=A311D）出图，
+     核对 kernel.img 6.18.49 / ramdisk_size=0 / cmdline 153 B /
+     KERNEL 与 SYSTEM 模块目录同为 6.18.49，跑出图闸门。
+  P0 先整盘备份 F 盘当前组合，G 盘保留为唯一回退盘；
+     刷盘上电采 0~16 s 串口日志确认 usb-storage -> scsi -> sda。
+  P0 进系统后按变更清单第五节逐项验收 uname / modules.dep /
+     panfrost / renderD128 / sway+essway / gpu_stack_check /
+     HDMI 流畅度。
+  P1 修 kernel.img.md5 同步逻辑；单独验收 libmali vendor 栈
+     （本次对齐只保证 panfrost 开源栈可用）。
 
 ================================================================================
 本文所有结论均带证据分级；[未执行] 项不得在后续汇报中写成已完成。

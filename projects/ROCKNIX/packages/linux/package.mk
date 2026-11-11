@@ -66,8 +66,18 @@ case ${DEVICE} in
         PKG_VERSION="6.19.5"
         PKG_URL="https://www.kernel.org/pub/linux/kernel/v${PKG_VERSION/.*/}.x/${PKG_NAME}-${PKG_VERSION}.tar.xz"
         ;;
-      S922X|RK3399|RK3566|A311D)
+      S922X|RK3399|RK3566)
         PKG_VERSION="6.18.21"
+        PKG_URL="https://www.kernel.org/pub/linux/kernel/v${PKG_VERSION/.*/}.x/${PKG_NAME}-${PKG_VERSION}.tar.xz"
+        ;;
+      # A311D uses the 6.18.49 kernel validated on this board with the bootkit
+      # boot chain: the 6.18.21 kernel.img could not bind the CBM2199 USB
+      # storage device, so initramfs never found LABEL=ROCKNIX. Keeping
+      # PKG_VERSION here also keeps kernel.img and the modules_install output
+      # (SYSTEM /usr/lib/kernel-overlays/base/lib/modules/) built from the same
+      # source tree. Split out so S922X/RK3399/RK3566 stay on 6.18.21.
+      A311D)
+        PKG_VERSION="6.18.49"
         PKG_URL="https://www.kernel.org/pub/linux/kernel/v${PKG_VERSION/.*/}.x/${PKG_NAME}-${PKG_VERSION}.tar.xz"
         ;;
       *)
