@@ -259,16 +259,24 @@ def check_repo(root, r):
             r.bad("S5", "dtb.img FDT 解析失败：%s" % e)
 
     # --- S6 mkbootimg：无外部 ramdisk + 完整 cmdline + 自检 ---
+    # codesnake/mkbootimg 强制要求 --ramdisk 参数（缺失即报
+    # "error: no ramdisk image specified"，CI 表现为 install linux:target
+    # 失败 / exit code 2），但接受字面量 NONE：ramdisk_data=0、
+    # ramdisk_size=0。因此判据是「必须存在且只能是 --ramdisk NONE」，
+    # 既不能删参数，也不能传真实 cpio 文件。
     mp = p(DEV + "/bootloader/mkbootimg")
     if os.path.isfile(mp):
         t = read_text(mp)
         # 只看代码行：注释里出现 "--ramdisk" 是说明文字，不是实际参数。
         code = "\n".join(l for l in t.splitlines()
                          if not l.lstrip().startswith("#"))
-        if re.search(r"--ramdisk\b", code):
-            r.bad("S6", "bootloader/mkbootimg 仍带 --ramdisk（会产生 ramdisk_size>0）")
+        ramdisk_args = re.findall(r"--ramdisk(?:\s+|=)(\S+)", code)
+        if not ramdisk_args:
+            r.bad("S6", "mkbootimg 缺少 --ramdisk（工具会报 no ramdisk image specified）")
+        elif any(v.strip("\"'") != "NONE" for v in ramdisk_args):
+            r.bad("S6", "mkbootimg 传入真实 ramdisk 文件 %r（会产生 ramdisk_size>0）" % ramdisk_args)
         else:
-            r.ok("S6", "mkbootimg 不带 --ramdisk（ramdisk_size=0 内建 initramfs）")
+            r.ok("S6", "mkbootimg 使用 --ramdisk NONE（ramdisk_size=0 内建 initramfs）")
         if '--cmdline "${BOOTIMG_CMDLINE}"' not in t:
             r.bad("S6", "mkbootimg 未把 BOOTIMG_CMDLINE 写入 header")
         else:

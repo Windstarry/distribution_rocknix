@@ -12,8 +12,14 @@
 # on this board and is the reason every post-20261109 CI build black-screens
 # with "Unable to find LABEL=ROCKNIX".
 #
-# Do not reintroduce --ramdisk here. Do not derive the cmdline from
-# EXTRA_CMDLINE: that adds "quiet" and drops the EDID / net.ifnames settings.
+# The codesnake/mkbootimg host tool REQUIRES a --ramdisk argument: without
+# it the tool aborts with "error: no ramdisk image specified" (CI failure
+# "install linux:target", exit code 2). The tool accepts the literal NONE,
+# which sets ramdisk_data=0 and ramdisk_size=0 in the Android header. Pass
+# exactly "--ramdisk NONE" here -- never a real cpio file, and never drop
+# the argument entirely. Both mistakes produce an unbootable / unbuildable
+# image. Do not derive the cmdline from EXTRA_CMDLINE either: that adds
+# "quiet" and drops the EDID / net.ifnames settings.
 
 if [ -z "${BOOTIMG_CMDLINE}" ]; then
   echo "A311D: BOOTIMG_CMDLINE is unset; refusing to build a cmdline-less boot.img" >&2
@@ -25,6 +31,7 @@ echo "A311D: building Android boot image (builtin initramfs, ramdisk_size=0)"
 echo "       cmdline: ${BOOTIMG_CMDLINE}"
 
 LDFLAGS="" mkbootimg --kernel arch/${TARGET_KERNEL_ARCH}/boot/${KERNEL_TARGET} \
+  --ramdisk NONE \
   ${ANDROID_BOOTIMG_OPTIONS} \
   --cmdline "${BOOTIMG_CMDLINE}" \
   --output arch/${TARGET_KERNEL_ARCH}/boot/boot.img || exit 1

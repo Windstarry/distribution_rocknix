@@ -158,18 +158,42 @@ makeinstall_target() {
     # Copy achievements hooks script
     cp ${PKG_DIR}/scripts/call_achievements_hooks.sh ${INSTALL}/usr/share/libretro
 
+  # Optional bezel overlays. The anonymous GitHub REST API is rate limited
+  # on shared runner IPs (HTTP 403 on 2026-11-10 CI, 6 retries all failed
+  # at this step) and a cosmetic asset must never abort a firmware build.
+  # Prefer the live API, fall back to a pinned release, and degrade to a
+  # warning if the downloads themselves are unavailable. The success path
+  # is byte-for-byte the same as before, so other devices are unaffected.
   mkdir -p ${INSTALL}/usr/share/misc/
-  curl -fsSL https://api.github.com/repos/AveyondFly/bezels/releases/latest \
+  BEZEL_URLS=${PKG_BUILD}/bezels.urls
+  : > ${BEZEL_URLS}
+  { curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 \
+      -H "Accept: application/vnd.github+json" \
+      https://api.github.com/repos/AveyondFly/bezels/releases/latest \
     | sed -n 's/.*"browser_download_url": "\(https:\/\/github\.com\/AveyondFly\/bezels\/releases\/download\/[^"]*\/bezels_[^"]*\.zip\)".*/\1/p' \
-    > ${PKG_BUILD}/bezels.urls
-  [ -s ${PKG_BUILD}/bezels.urls ] || { echo "(bezels assets not found)" ; exit 1 ; }
+    > ${BEZEL_URLS}; } || true
+
+  if [ ! -s ${BEZEL_URLS} ]; then
+    echo "(bezels API unavailable; falling back to pinned release)"
+    BEZEL_TAG="release-6-060c4a9"
+    for res in 1024x768 1280x720 480x320 640x480 720x720 854x480 960x544 960x720
+    do
+      echo "https://github.com/AveyondFly/bezels/releases/download/${BEZEL_TAG}/bezels_${res}.zip" >> ${BEZEL_URLS}
+    done
+  fi
 
   while read -r bezel_url
   do
+    [ -z "${bezel_url}" ] && continue
     bezel_zip=${bezel_url##*/}
-    curl -fLo ${PKG_BUILD}/${bezel_zip} ${bezel_url}
-    cp ${PKG_BUILD}/${bezel_zip} ${INSTALL}/usr/share/misc/
-  done < ${PKG_BUILD}/bezels.urls
+    if curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 \
+         -o ${PKG_BUILD}/${bezel_zip} ${bezel_url}; then
+      cp ${PKG_BUILD}/${bezel_zip} ${INSTALL}/usr/share/misc/
+    else
+      echo "(bezels: skipped ${bezel_zip}, download unavailable)"
+      rm -f ${PKG_BUILD}/${bezel_zip}
+    fi
+  done < ${BEZEL_URLS}
 }
 
 post_install() {

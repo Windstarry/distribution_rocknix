@@ -98,7 +98,13 @@ jobs:
       - build-aarch64-emu-libretro
       - build-aarch64-emu-standalone
       - build-arm
-    if: ${{ always() && !cancelled() && !contains(needs.*.result, 'failure')  }}
+    # !contains(needs.*.result,'failure') also lets 'skipped' through: the
+    # image job then downloads emu-libretro / emu-standalone artifacts that
+    # were never produced ("Artifact not found for name: emu-libretro").
+    # Require the two emulator jobs to actually succeed. build-arm is
+    # intentionally skipped on SM8650, so 'skipped' stays valid for it.
+    # Job ids contain hyphens -> bracket notation is required here.
+    if: ${{ always() && !cancelled() && needs['build-aarch64-emu-libretro'].result == 'success' && needs['build-aarch64-emu-standalone'].result == 'success' && (needs['build-arm'].result == 'success' || needs['build-arm'].result == 'skipped') }}
     uses: ./.github/workflows/build-aarch64-image.yml
     secrets: inherit
     with:

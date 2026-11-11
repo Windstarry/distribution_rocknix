@@ -142,7 +142,12 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
     packages/linux/package.mk：pre_make_target 把「清空
     CONFIG_INITRAMFS_SOURCE」限制为仅 S905；A311D 走
     "$(kernel_initramfs_confs) ${BUILD}/initramfs"。make_target 的外部
-    cpio 生成限定在 S905 分支。A311D 的 mkbootimg 不带 --ramdisk。
+    cpio 生成限定在 S905 分支。A311D 的 mkbootimg 使用 --ramdisk NONE：
+    codesnake/mkbootimg 强制要求该参数，缺参即报 "error: no ramdisk image
+    specified"（2026-11-11 CI 的 install linux:target / exit code 2 即由此
+    引起），字面量 NONE 是工具原生支持的「空 ramdisk」写法，生成
+    ramdisk_size=0 的 Android 头且不加载任何 cpio。核查项 S6 已同步改为
+    「必须存在且只能是 --ramdisk NONE」。
     S905 的 mkbootimg 未改动（回归保护，核查项 S11）。
 
   特征三  经典 cfgload / aml_autoscript，无 ceboot
