@@ -341,4 +341,45 @@ A311D / AURKNIX 20261111 新构建上电失败 —— 双盘单变量归因诊�
          该板上枚举 USB 存储」，这正是「离线 35 PASS / 0 FAIL、
          上电仍失败」的原因。
 
+--------------------------------------------------------------------------------
+第八节  补记：2026-11-11 22:23 活体验收（全文最新状态）
+--------------------------------------------------------------------------------
+  本节与前文（含 3.2 嫌疑排序、3.3 取证缺口、第六节状态）冲突处以本节为准。
+  完整报告：tools/a311d_live_acceptance_20261111.txt
+  原始凭证：E:/A311d/.../20261111/live_*_20261111_22*.txt
+
+  1. 系统已正式进入并上线 192.168.31.7（root/rocknix），SSH 可达，
+     /flash / /storage 挂载完成、sda3 首启扩容完成；
+     sway + essway active/running，UI_SERVICE 与 gpu.driver=panfrost
+     生效。第五节风险 2「前端大概率起不来」的预判被实机推翻。
+
+  2. 3.3 的 P0 串口证据已由活机 dmesg 补齐：同一块 CBM2199
+     （SN 7419751033367614176）在 6.18.49 下 3.636 usb-storage
+     detected -> 3.642 scsi host0 -> 4.736 [sda] Attached SCSI
+     removable disk。与 11-10 失败日志差分：USB 枚举两侧一致，
+     差异在枚举后的存储绑定；initramfs 3.046 已打印 Checking disk(s)
+     并等到 14.741 才放弃，说明脚本有等待重试，故「6.18.21 内核态
+     绑定行为」权重上升、「initramfs 脚本差异」权重下降，
+     但二者仍未文件级分离。
+
+  3. 前置第 3 节「盘侧权重高」与 3.2 嫌疑一至此完全关闭；
+     第六节「实验 A 上电验证 / 串口日志」状态改为已执行。
+     tools/a311d_usb_boot_probe.py 已修判定 bug：内核打印
+     "Attached SCSI removable disk"，旧版只匹配 "Attached SCSI disk"，
+     曾把已就绪的 sdX 误判为未出现。
+
+  4. 新增未闭环项：GPU 内核模块层。uname 6.18.49 /
+     模块目录 6.18.21，/lib/modules/6.18.49 为空、无 modules.dep，
+     mali_kbase 加载失败，dmesg 无 panfrost，/dev/dri 仅 card0，
+     gpu_stack_check --live PASS 4 / FAIL 4 / VERDICT=FAIL。
+     is-system-running=degraded（6 个 tmp-*.mount failed）。
+     /flash/kernel.img.md5 仍是旧记录、多出 kernel.img.beck。
+
+  5. 首选修复路线改为「同源 6.18.49 构建」：6.18.49 内核已在本板、
+     本盘、本 DTB、本引导链实机验证，风险最低；同步给 CI 闸门补
+     「内核版本 == SYSTEM /lib/modules 版本」判据。
+     HDMI 实际画面、帧率、sway 渲染后端仍 [未执行]。
+
+  [不得写] 「已修复」「移植完成」「GPU 栈正常」「前端完全可用」。
+
 ================================================================================

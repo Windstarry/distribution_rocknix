@@ -1,0 +1,301 @@
+================================================================================
+A311D / AURKNIX 2026-11-11 22:23 活体验收报告
+实验 A 组合：20261111 CI 镜像 + 6.18.49 kernel.img，正式进入系统且前端服务拉起
+================================================================================
+时间      ：2026-11-11 22:23 ~ 22:29（北京时间 GMT+8）
+设备      ：192.168.31.7  root/rocknix  A311D / CAINIAO CNIoT-CORE
+形态      ：F 盘（048d:1234 CBM2199 32 GB）启动，仅 kernel.img 换为
+            G 盘 6.18.49 版本，其余全部保持 20261111 CI 产物
+取证方式  ：SSH/paramiko 纯只读采集，未修改设备任何文件
+关联文档  ：tools/a311d_HANDOFF.txt（第十二节）
+            tools/a311d_experiment_a_result_20261111.txt（实验 A 结果）
+            tools/a311d_boot_disk_diagnosis_20261111.txt（双盘归因诊断）
+
+证据分级：
+  [实证-活体] SSH 命令输出、dmesg、systemctl、md5sum 实读
+  [实证-字节] 本机 .img / 物理盘 / bootkit 离线解析
+  [推断]      基于实证的工程推论，未由进一步板级实验确认
+  [未执行]    尚未进行的动作，禁止写成已完成
+
+--------------------------------------------------------------------------------
+一、结论摘要
+--------------------------------------------------------------------------------
+1. 用户报告属实并经活体确认 [实证-活体]：系统已正式进入，
+   SSH 可达，/flash、/storage 挂载完成，首启扩容完成（sda3 已生成），
+   sway.service 与 essway.service 均 ActiveState=active /
+   SubState=running，NRestarts=0，进程存在。
+
+2. 这同时补齐了此前缺的 P0 串口级证据 [实证-活体]：本轮 dmesg 完整打印
+   usb-storage -> scsi host0 -> [sda] Attached SCSI removable disk，
+   且 USB 序列号 7419751033367614176 与 F 盘 Windows PNP 序列号逐字相同。
+   同一块 CBM2199 在 6.18.49 内核下从 3.636 s 到 4.736 s 完成绑定。
+   盘侧不兼容由 [推断] 升级为 [已排除]，实验 A 结论获得活体闭环。
+
+3. 但 GPU 栈并未闭环 [实证-活体]：运行内核 6.18.49，
+   模块目录实际为 6.18.21，/lib/modules/6.18.49 是空目录、
+   无 modules.dep，mali_kbase 加载失败，dmesg 无 panfrost 初始化记录，
+   /dev/dri 只有 meson VPU 的 card0、无 renderD128。
+   tools/a311d_gpu_stack_check.py --live 判定 PASS 4 / FAIL 4 / SKIP 10，
+   VERDICT = FAIL（不接受该构建）。
+   前端服务能起 ≠ GPU 硬件加速可用，二者必须分开表述。
+
+4. 口径限定：
+   [可以写] 「系统可运行、前端服务已拉起（sway + essway active）」；
+            「引导失败收敛到 6.18.21 kernel.img 内容差异」；
+            「盘侧排除、六特征实机验证通过」。
+   [不得写] 「已修复」「移植完成」「GPU 栈正常」「前端完全可用」；
+            「版本混刷导致前端起不来」（本轮已被实机推翻，见 3.3）；
+            「panfrost 已工作」（只有配置生效值，驱动未加载）。
+
+--------------------------------------------------------------------------------
+二、数据呈现
+--------------------------------------------------------------------------------
+2.1 系统身份与启动组合 [实证-活体]
+
+  uname -a    Linux A311D 6.18.49 #1 SMP PREEMPT Sun Nov  8 20:02:56 CST 2026
+  uptime      10 min（22:25 时点）
+  os-release  OS_VERSION="20261111"  BUILD_ID=a901729de2e9f15565ce9ea26eab2a97b85f0629
+              BUILD_BRANCH=a311d  BUILD_DATE="Wed Nov 11 06:17:36 UTC 2026"
+              HW_DEVICE=A311D（OS_NAME 仍写 ROCKNIX，为 branding 未改）
+  /proc/cmdline 尾部 153 B 与 BOOTIMG_CMDLINE 逐字一致：
+              boot=LABEL=ROCKNIX disk=LABEL=STORAGE console=ttyAML0,115200n8
+              console=tty0 no_console_suspend net.ifnames=0 video=HDMI-A-1:D
+              systemd.debug_shell=ttyAML0
+  挂载        /dev/sda1 -> /flash (vfat ro)，/dev/loop0 -> / (squashfs ro)，
+              /dev/sda2 -> /storage (ext4 rw)
+  分区        sda1 2.0G（70% 用）/ sda2 7.3G（7% 用）/ sda3 23,002,112 块
+              （首启扩容已生成，/dev/disk/by-label/ROCKNIX -> ../../sda1）
+  结论        KERNEL=6.18.49（GOLD 参考内核） + SYSTEM=20261111 CI 构建，
+              即实验 A 的目标组合，字节与版本均已坐实。
+
+2.2 USB 存储绑定链（本轮 dmesg，与 11-10 失败日志逐行对照）[实证-活体]
+
+  11-11 成功（本轮 / CBM2199 / 6.18.49）
+    3.046774  Checking disk(s):  LABEL=ROCKNIX LABEL=STORAGE
+    3.521524  usb 1-1.1: new high-speed USB device number 3 using xhci-hcd
+    3.611714  New USB device found, idVendor=048d, idProduct=1234
+    3.629675  SerialNumber: 7419751033367614176
+    3.636599  usb-storage 1-1.1:1.0: USB Mass Storage device detected
+    3.642744  scsi host0: usb-storage 1-1.1:1.0
+    4.671454  scsi 0:0:0:0: Direct-Access VendorCo ProductCode 2.00
+    4.678514  sd 0:0:0:0: [sda] 65536000 512-byte logical blocks (33.6 GB)
+    4.736726  sd 0:0:0:0: [sda] Attached SCSI removable disk
+
+  11-10 失败（同盘 / CBM2199 / 6.18.21）
+    3.428     new high-speed USB device number 3 using xhci-hcd
+    3.518     New USB device found, idVendor=048d, idProduct=1234
+    3.536     SerialNumber: 7419751033367614176
+    ---- 3.536 -> 14.741 共 11.2 秒，缺失整段 ----
+    14.741    fsck: couldn't find matching filesystem: LABEL=ROCKNIX
+    14.756    LABEL=ROCKNIX: Can't lookup blockdev（×3）-> 3 s 后关机
+
+  判读：两侧 USB 枚举（xhci / hub / VID:PID / SN）完全一致，
+        差异出现在「设备枚举完成之后的 usb-storage 接口绑定」。
+        成功侧 3.636 立刻绑定，失败侧 11.2 秒内始终未生成 scsi host / sdX。
+        由于 initramfs 在 3.046 就打印 Checking disk(s) 并等到 14.741
+        才放弃，说明脚本侧确有等待重试机制；这使「6.18.21 内核态
+        usb-storage / uas 绑定行为」的权重上升，
+        「initramfs 脚本逻辑差异」权重下降，但二者仍未做文件级分离。[推断]
+
+2.3 前端服务与 UI 配置 [实证-活体]
+
+  systemctl show（22:25）
+    sway.service    ActiveState=active   SubState=running  MainPID=2893  NRestarts=0
+    essway.service  ActiveState=active   SubState=running  MainPID=2894  NRestarts=0
+    emustation.service  inactive / dead（由 essway 取代，符合预期）
+  进程
+    /bin/sh /usr/bin/sway.sh（2893）
+    /usr/bin/sway -V（2903，CPU 37.4%，MEM 10.2%）
+    swaybg -o HDMI-A-1 -c #000000（2955）
+  UI_SERVICE
+    /etc/profile.d/090-ui_service 存在，值为
+      UI_SERVICE="sway.service essway.service"
+    /etc/profile 生效值同为 "sway.service essway.service"
+  gpu.driver
+    get_setting gpu.driver = panfrost（来自 SYSTEM 默认注入）
+    /storage/.config/gpu.driver 文件不存在（用户层未覆盖，非缺失故障）
+  journal
+    sway.service：Starting -> Started，无致命错误
+    essway/start_es.sh：大量 "System <name> path does not exist"
+      （空 ROM 目录的正常现象）、"[InputDevice] Unknown mapping: guide/crc"、
+      序列号检查跳过，未见 EGL/GL 致命错误
+  dmesg DRM
+    1.776744 meson-drm Queued 1 outputs on vpu
+    1.841185 [drm] forcing HDMI-A-1 connector on
+    1.852725 [drm] Initialized meson 1.0.0 for ff900000.vpu on minor 0
+    2.492596 [drm] fb0: mesondrmfb frame buffer device
+    全程无 panfrost 初始化记录
+
+2.4 GPU 栈实测（关键未闭环项）[实证-活体]
+
+  /lib/modules/                         6.18.49（空目录，内核自行创建）
+  /usr/lib/kernel-overlays/base/lib/modules/   6.18.21
+      含 modules.dep / modules.builtin / kernel/ / mali-bifrost/ 等
+  /lib/modules/6.18.49/modules.dep      No such file or directory
+  modprobe -n mali_kbase                FATAL: Module mali_kbase not found
+                                        in directory /lib/modules/6.18.49
+  lsmod | grep -Ei 'panfrost|mali|drm|gpu'  无输出
+  /dev/dri/                            card0 + by-path（仅此）
+  /sys/class/drm/                      card0 / card0-HDMI-A-1 / version
+  drm name                            meson dev=ff900000.vpu
+  /dev/mali*                          不存在
+
+  tools/a311d_gpu_stack_check.py --live（22:26）
+    PASS  TC-LIVE-05 有效 gpu.driver = panfrost
+    PASS  TC-LIVE-06 有效 UI_SERVICE = sway.service essway.service
+    PASS  TC-LIVE-07 sway / essway active
+    PASS  TC-LIVE-08 config.ini gpu_dtb 未设置（使用 dtb.img）
+    FAIL  TC-LIVE-01 uname 6.18.49 != 模块目录 6.18.21
+    FAIL  TC-LIVE-02 /lib/modules/$(uname -r)/modules.dep 缺失
+    FAIL  TC-LIVE-03 无 GPU 内核模块加载
+    FAIL  TC-LIVE-04 无 render node（card0 只是 VPU，缺 card1/renderD128）
+    SKIP  10 项（未提供解包 SYSTEM，非失败）
+    SUMMARY PASS 4 / FAIL 4 / SKIP 10，VERDICT: FAIL - 不接受该构建
+
+  判读：sway 进程 37.4% CPU 且无 GPU 渲染节点，疑似走软件渲染或
+        DRM dumb buffer 路径。[推断] 实际显示画面、帧率、可交互性
+        尚未由 HDMI 侧验证，[未执行]。
+
+2.5 /flash 文件与三方 md5 闭环 [实证-活体 + 实证-字节]
+
+  /flash 关键文件（22:27 活体 md5sum，与 bootkit / G 盘 / 本机备份对照）
+    kernel.img        14,215,168 B  dd3cafaa7aa551fd6ef135925f48c765
+                      = G 盘 6.18.49 源（22:14 本机复核值）
+    dtb.img               54,984 B  0fee9ffd2a2f3cb4a891b71176e3ee6a
+                      = 仓库 bootkit 黄金 DTB
+    cfgload                  497 B  1a3a799f88b29c2843106f7d971de372
+    aml_autoscript         1,466 B  21e3fb29c6dd0f0e20efcffc7b3ac31f
+    SYSTEM         1,483,100,160 B  20261111 CI 产物（未做全量 md5，1.4 GB 超时）
+    kernel.img.md5           48 B  984b3e432aa221c35a59ecd717831ca1
+    kernel.img.beck   13,973,504 B  原 6.18.21 内核的盘内备份
+    config.ini / device_trees / fs-resize.log / SYSTEM.md5 均在位
+
+  三项观察（不影响本次启动，但需登记）：
+    a) kernel.img.md5 的文件 md5 与 22:05 备份中的旧记录完全相同
+       （984b3e43...），说明替换 kernel.img 时未同步更新该记录，
+       内容仍指向旧的 6.18.21 md5。cfgload 直接 fatload kernel.img，
+       不校验 .md5，故不影响启动；但会影响 OTA/更新校验。
+       本轮未采到该文件明文，判读基于 md5 比对。[实证-字节 + 推断]
+    b) /flash 多出 kernel.img.beck（13,973,504 B，等于原 6.18.21
+       kernel.img 大小），是盘内额外备份，非 CI 产物；不要误当启动文件。
+    c) SYSTEM 全量 md5 因 1.4 GB 读取超时未取，SYSTEM.md5 明文未采到。
+
+2.6 系统健康 [实证-活体]
+  systemctl is-system-running = degraded
+  失败单元 6 个，均为 RetroArch 资源目录挂载：
+    tmp-assets / tmp-cores / tmp-database / tmp-joypads /
+    tmp-overlays / tmp-shaders .mount failed
+  journal 另有 pkcs8_key_parser 模块未找到、ASoC 无 backend DAI、
+    pipewire-pulse DBus 权限拒绝、mmcblk bfq udev 规则忽略等噪声。
+  这些与引导链、USB 存储、前端服务启动无因果关系，属独立清理项。
+
+--------------------------------------------------------------------------------
+三、原因分析
+--------------------------------------------------------------------------------
+3.1 为什么能进系统
+  U-Boot 层（三件套 / 卷标 / cmdline / ramdisk_size=0）、DTB 层、
+  FAT 层、SYSTEM 层本就无误；唯一缺陷是 6.18.21 kernel.img 在该板上
+  不能把 CBM2199 绑定成块设备。换成 6.18.49 kernel.img 后，
+  3.636~4.736 s 完成 usb-storage -> scsi -> sda，initramfs 得以
+  以 LABEL=ROCKNIX 挂 /flash，系统正常起来。与 11-10 失败日志
+  的差分完全自洽。[实证-活体 + 实证-字节]
+
+3.2 为什么前端进程能起、GPU 栈却不健康
+  UI_SERVICE 已由 /etc/profile.d/090-ui_service 注入且生效，
+  gpu.driver 有效值为 panfrost，所以 autostart 能启动 sway + essway。
+  但内核换成 6.18.49 后，模块目录仍是 SYSTEM 打包的 6.18.21，
+  /lib/modules/6.18.49 为空，panfrost.ko / mali_kbase.ko 均加载不了，
+  DRM 只剩 meson VPU 的 card0，没有 GPU 渲染节点。
+  即「服务编排层已通、内核模块层未通」。[实证-活体 + 推断]
+
+3.3 对上一轮推断的修正（必须记录）
+  上一轮（22:14）把「6.18.49 内核 + 6.18.21 模块」预判为
+  「mali_kbase 加载不了 -> 前端大概率起不来」。本轮实机推翻该预判：
+  sway / essway 均 active/running。修正后的正确表述是：
+    版本混刷不影响「服务被拉起」，但阻断「GPU 内核模块加载」，
+    因此前端能否有画面、是否硬件加速，仍未闭环。
+  用户此前「本机实测只能 panfrost 起前端」的纠正也应据此理解：
+  这是 libmali 栈在版本混刷下不可用，不是硬件能力上限。
+  [实证-活体；前端画面质量为推断]
+
+3.4 仍缺的证据
+  [P0] HDMI 实际画面 / 帧率 / 可交互性验证（用户目视或截图）。
+  [P0] sway 渲染后端确认（环境变量、/usr/lib/dri 内容、
+       WLR_RENDERER / GBM_BACKEND / LIBGL_ALWAYS_SOFTWARE）。
+       本轮 22:28 该组采集因 SSH 连续连接被设备重置而未取到。
+  [P1] /flash/kernel.img.md5 明文、SYSTEM 全量 md5。
+  [P1] 6.18.21 与 6.18.49 内建 initramfs 文件级对比
+       （本机无 lzop / python-lzo，需 LZO1X 解压能力）。
+  [P1] 6.18.21 kernel.img 在 CBM2199 上缺 usb-storage 绑定的
+       根因定位（内核本体 vs initramfs 尚未分离）。
+
+--------------------------------------------------------------------------------
+四、建议方案（按新证据重排优先级）
+--------------------------------------------------------------------------------
+路线一【推荐：同源 6.18.49 构建，一次性解决引导 + GPU 栈】
+  目标：KERNEL 与 SYSTEM 同为 6.18.49，让 /lib/modules/6.18.49
+        有完整 modules.dep，panfrost.ko / mali_kbase.ko 可加载，
+        /dev/dri 出现 renderD128，前端从「进程 running」升级为
+        「硬件加速可用」。
+  实现：把 projects/ROCKNIX/packages/linux/package.mk 第 69~71 行
+        A311D 的 PKG_VERSION 由 6.18.21 对齐到 6.18.49（建议只给
+        A311D 分支，S922X/RK3399/RK3566 另行评估），同步
+        linux.aarch64.conf 版本头与补丁兼容性，完整重建后
+        KERNEL/SYSTEM 同源；前置验证 kernel.org 6.18.49 tarball
+        可得、Amlogic 补丁可应用、CI 闸门通过。
+  本轮证据支持度：6.18.49 内核已在同一块盘、同一套 DTB、
+        同一套引导链上实机验证可启动，风险显著低于继续用 6.18.21。
+
+路线二【形态最干净，但成本高】
+  保持同源 6.18.21，通过串口差分 + 内建 initramfs 文件级对比
+  定位 usb-storage 未绑定环节后修源码。修完可保留 CI 6.18.21
+  同源构建，模块与内核天然匹配。需补齐 LZO1X 解压能力。
+
+路线三【临时交付 / 现状登记】
+  以当前 F 盘组合作为可运行临时盘：系统可用、sway + essway running。
+  但必须登记三项已知未闭环：
+    a) 6.18.49 内核 + 6.18.21 模块，GPU 内核模块未加载、无 render node；
+    b) /flash/kernel.img.md5 记录与 kernel.img 不一致；
+    c) is-system-running = degraded（6 个 tmp-*.mount failed）。
+  不建议作为最终交付镜像发布。
+
+配套改造（无论选哪条路线都建议做）
+  1) tools/a311d_ci_bootchain_check.py 增加判据
+     「kernel.img 内核版本 == SYSTEM /lib/modules 目录版本」，
+     把版本混刷变成出图前 FAIL；现有闸门只校验六特征字节形态，
+     不校验内核与模块版本一致性，也不校验板级 USB 存储兼容性。
+  2) 修 /flash/kernel.img.md5 同步逻辑，避免 OTA 校验踩坑。
+  3) 保留 G 盘（Kingston / GOLD）为唯一完整回退盘，不擦除；
+     F 盘当前状态建议整盘镜像备份后再继续实验。
+
+--------------------------------------------------------------------------------
+五、状态与限制
+--------------------------------------------------------------------------------
+  [已完成] 活体只读验收：系统身份、USB 绑定链、/flash md5 三方闭环、
+           前端服务状态、GPU 栈一致性、系统健康、journal 与 dmesg。
+  [已修正] tools/a311d_usb_boot_probe.py 判定 bug：内核打印
+           "Attached SCSI removable disk"，旧版只匹配
+           "Attached SCSI disk"，曾把已就绪的 sdX 误判为未出现；
+           同时把结论提示改为区分「启动盘场景 / 对插数据盘场景」。
+  [未执行] HDMI 画面与帧率验收、sway 渲染后端确认、
+           SYSTEM 全量 md5、kernel.img.md5 明文、initramfs 文件级对比、
+           6.18.21 缺陷定位、任何构建脚本修改。
+  [不得写] 「已修复」「移植完成」「GPU 栈正常」「前端完全可用」
+           「panfrost 已工作」「已定位根因」。
+  [可以写] 「系统可运行、前端服务已拉起（sway + essway active）」
+           「引导失败收敛到 6.18.21 kernel.img 内容差异」
+           「盘侧排除、六特征实机通过」「GPU 内核模块层未闭环」。
+
+--------------------------------------------------------------------------------
+六、原始凭证索引
+--------------------------------------------------------------------------------
+  E:/A311d/AURKNIX-image-A311D-20261031/AURKNIX-image-A311D-20261111/
+    live_usb_expA_20261111_2223.txt         USB/内核/分区/dmesg 全量
+    gpu_probe_live_20261111.txt              GPU probe dump
+    live_acceptance_20261111_2225.txt       系统/服务/模块/挂载/日志（part1）
+    live_acceptance_20261111_2225_part2.txt cmdline/journal/dmesg DRM/storage
+    live_acceptance_20261111_2225_part3.txt /flash 清单与 md5/DRM 节点/sway 日志
+    live_acceptance_20261111_2225_part4.txt 补采段（SSH 被重置，未取到）
+    bisect_backup_F_20261111/                F 盘原 6.18.21 内核备份 + manifest
+  工具报告：python tools/a311d_gpu_stack_check.py --live <gpu probe dump>
+================================================================================

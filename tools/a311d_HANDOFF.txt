@@ -2,10 +2,11 @@
 A311D / AURKNIX 移植交接文档（当前状态总览）
 ================================================================================
 生成时间：2026-11-11 00:30（北京时间 GMT+8）
-最近更新：2026-11-11 22:14（第十一节，单变量实验 A 实机结果）
+最近更新：2026-11-11 22:29（第十二节，活体验收：系统进入、前端服务拉起）
 文档定位：接手人第一阅读入口。本文自包含，覆盖并取代此前各轮口头结论。
-最新状态：以第十一节为准；实验 A 结果报告见
-          tools/a311d_experiment_a_result_20261111.txt
+最新状态：以第十二节为准；活体验收报告见
+          tools/a311d_live_acceptance_20261111.txt
+          实验 A 结果报告见 tools/a311d_experiment_a_result_20261111.txt
 历史流水账：tools/a311d_handoff_20261110.txt（1264 行，补记一~十一）
 完整时间线：tools/a311d_port_timeline_20261110.txt（370 行，阶段 A~G）
 活体论证：  tools/a311d_aurknix_runnable_proof_20261110.txt（246 行）
@@ -15,7 +16,10 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
   [实证]   活体 SSH 采集、串口日志、.img 离线解析、md5 交叉比对所得
   [推断]   基于实证的工程推论，尚未由板级验证确认
   [未执行] 尚未进行的动作，禁止写成已完成或已通过
-禁止表述：「已修复」「新镜像已可进系统」「前端已启动」。
+禁止表述：「已修复」「移植完成」「GPU 栈正常」「前端完全可用」
+          「panfrost 已工作」「已定位根因」。
+允许表述（须带限定）：「系统可运行」「前端服务已拉起（sway + essway
+          active）」——服务层事实见第十二节，不等于 GPU 栈闭环。
 
 --------------------------------------------------------------------------------
 第一节  一句话结论
@@ -341,8 +345,14 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
   [未执行] 实验 B / C（已非必需，保留为交叉验证手段）。
   [未执行] 本轮上电 0~16 s 串口原始日志采集（分离内核本体与
            内建 initramfs 的关键证据）。
-  [未执行] 首启初始化完成后的系统状态验收、SSH 可达性、
-           前端启动验收（mali_kbase / UI_SERVICE / essway / sway / /dev/dri）。
+  [已执行/部分通过] 22:23~22:29 活体验收：系统正式进入、SSH 可达、
+           三分区挂载与首启扩容完成；sway + essway active/running；
+           UI_SERVICE 与 gpu.driver=panfrost 生效（第十二节）。
+  [未闭环] GPU 内核模块层：uname 6.18.49 / 模块目录 6.18.21、
+           /lib/modules/6.18.49/modules.dep 缺失、panfrost/mali_kbase
+           未加载、/dev/dri 仅 card0（meson VPU）、无 renderD128；
+           gpu_stack_check --live 判定 PASS 4 / FAIL 4 / VERDICT=FAIL。
+           HDMI 实际画面、帧率、可交互性 [未执行]。
   [未执行] 构建脚本修复（内核版本对齐或 6.18.21 缺陷定位）。
 
   未验证假设一 [推断]：黄金 DTB 编译自 6.18.49 内核 DTS，与 CI 同源
@@ -460,14 +470,15 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
        仍报 Unable to find LABEL=ROCKNIX。
   [已完成] 22:14 单变量实验 A（判读 A2）：盘侧排除、六特征实机验证、
        根因收敛到 6.18.21 kernel.img 内容差异（第十一节）。
-  P0  （用户侧）等首启初始化结束，采集系统状态：uname -r、
-       /lib/modules/、findfs LABEL=ROCKNIX、/flash 挂载、
-       systemctl is-system-running；确认 SSH 可达。
-  P0  （用户侧）补采本轮上电 0~16 s 串口原始日志，与 11-10 失败日志
-       逐行差分，把「内核本体」与「内建 initramfs」两个候选分开。
-  P0  （用户侧）前端验收：mali_kbase 加载、UI_SERVICE、gpu.driver、
-       essway/sway、/dev/dri。注意当前为 6.18.49 内核 + 6.18.21 模块
-       的版本混刷组合，不可预判前端结果。
+  [已完成] 22:23~22:29 活体系统状态采集与前端服务验收
+       （uname -r、/lib/modules、blkid、/flash 挂载、is-system-running、
+       sway/essway、/dev/dri、/flash md5 三方闭环），见第十二节。
+  [已部分完成] 0~16 s USB 绑定链已由活机 dmesg 补齐（3.636~4.736 s
+       完整链），串口原始日志仍缺，用于分离内核本体与内建 initramfs。
+  P0  （用户侧）HDMI 实际画面 / 帧率 / 可交互性验收；确认 sway
+       渲染后端（WLR_RENDERER / GBM_BACKEND / 是否软件渲染）。
+  P0  （用户侧）按第十二节 12.4 选修复路线，优先「同源 6.18.49
+       构建」，让 panfrost.ko 可加载、出现 renderD128。
   P0  （决策）按第十一节 11.4 三选一：内核版本对齐 6.18.49 同源构建 /
        定位并修 6.18.21 kernel.img 具体缺陷 / 临时交付并登记混刷。
   P1  先备份 F 盘当前整盘状态（唯一「CI 六特征 + 可进初始化」组合），
@@ -637,6 +648,93 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
   并补采本轮 0~16 s 串口原始日志，与 11-10 失败日志逐行差分：
     确认 6.18.49 + CBM2199 下 usb-storage -> scsi host -> sdX 的
     完整时间点，用于区分「内核本体」与「内建 initramfs」两候选。
+
+--------------------------------------------------------------------------------
+第十二节  补记：2026-11-11 22:23 活体验收（全文最新状态）
+--------------------------------------------------------------------------------
+  本节与前文（含第十、十一节）冲突处以本节为准。
+  完整报告：tools/a311d_live_acceptance_20261111.txt
+  原始凭证：E:/A311d/.../20261111/live_*_20261111_22*.txt
+
+12.1 用户报告与活体确认
+  用户：「本次正式进入系统，ip 192.168.31.7，系统 aurknix，
+        root/rocknix，前端服务已拉起。」
+  22:23~22:29 SSH/paramiko 纯只读采集确认属实 [实证-活体]：
+    uname 6.18.49 #1 SMP Sun Nov 8 20:02:56 CST 2026，
+    os-release OS_VERSION=20261111 / BUILD_ID=a901729de2...，
+    即「GOLD 6.18.49 内核 + 20261111 CI SYSTEM」的实验 A 组合。
+    /dev/sda1 -> /flash(ro vfat)、/dev/loop0 -> /(squashfs)、
+    /dev/sda2 -> /storage(rw ext4)，sda3 首启扩容已生成。
+    cmdline 尾部 153 B 与 BOOTIMG_CMDLINE 逐字一致。
+
+12.2 决定性证据（补齐此前 P0 缺口）
+  a) USB 绑定链完整 [实证-活体]，与 11-10 失败日志逐行差分：
+     3.521 枚举设备 -> 3.611 VID 048d:1234 -> 3.629 SN
+     7419751033367614176（与 F 盘 PNP 序列号相同）
+     -> 3.636 usb-storage detected -> 3.642 scsi host0
+     -> 4.671 Direct-Access VendorCo -> 4.736 [sda] Attached SCSI
+        removable disk。成功侧刚枚举完就绑定；失败侧 3.536 之后
+     11.2 s 内缺整段，14.741 才 fsck 失败。
+     盘侧排除获得活体闭环；initramfs 3.046 已打印 Checking disk(s)
+     并等待重试，故「6.18.21 内核态绑定行为」权重上升，
+     「initramfs 脚本差异」权重下降，但二者仍未文件级分离。[推断]
+  b) /flash md5 三方闭环 [实证-活体]：
+     kernel.img dd3cafaa...（= G 盘 6.18.49 源）、
+     dtb.img 0fee9ffd...（= bootkit 黄金 DTB）、
+     cfgload 1a3a799f...、aml_autoscript 21e3fb29...。
+  c) 前端服务 [实证-活体]：sway.service / essway.service 均
+     active + running，NRestarts=0；UI_SERVICE 由
+     /etc/profile.d/090-ui_service 注入并生效；
+     get_setting gpu.driver = panfrost（SYSTEM 默认值）。
+  d) GPU 栈未闭环 [实证-活体]：/lib/modules/6.18.49 为空目录、
+     无 modules.dep；真实模块在
+     /usr/lib/kernel-overlays/base/lib/modules/6.18.21；
+     modprobe -n mali_kbase FATAL；lsmod 无 GPU 模块；
+     /dev/dri 只有 card0（meson VPU），无 renderD128；
+     dmesg 无 panfrost 初始化记录。
+     a311d_gpu_stack_check.py --live：PASS 4 / FAIL 4 / SKIP 10，
+     VERDICT = FAIL - 不接受该构建。
+  e) 系统健康：is-system-running = degraded，6 个 tmp-*.mount
+     （RetroArch 资源目录）failed；start_es.sh 报空 ROM 目录，
+     无 EGL/GL 致命错误。属独立清理项。
+  f) 观察项：/flash/kernel.img.md5 仍是旧 6.18.21 记录的 md5
+     （替换内核时未同步），另有 kernel.img.beck 13,973,504 B
+     （原内核盘内备份）。不影响 U-Boot 启动，影响 OTA 校验。
+
+12.3 口径修正（覆盖第十一节 11.4 的预判）
+  第十一节曾预判「版本混刷 -> 前端大概率起不来」。本轮实机推翻：
+    sway + essway 确实 active/running。
+  正确表述：版本混刷不阻塞「服务编排层」，但阻断「GPU 内核模块层」，
+    因此「前端服务已拉起」成立，「GPU 栈正常 / 前端完全可用」不成立。
+  用户此前「只能 panfrost 起前端」的纠正亦据此理解：是 libmali 栈
+    在版本混刷下不可用，不是硬件能力上限。
+  sway 进程 CPU 37.4% 且无 GPU 渲染节点，疑似软件渲染 [推断]；
+    HDMI 实际画面、帧率、可交互性 [未执行]。
+
+12.4 修复路线重排（新证据使路线一风险显著下降）
+  路线一【推荐】同源 6.18.49 构建：把 packages/linux/package.mk
+    第 69~71 行 A311D 的 PKG_VERSION 由 6.18.21 对齐 6.18.49，
+    同步 linux.aarch64.conf 与补丁，完整重建后 KERNEL/SYSTEM 同源，
+    panfrost.ko 可加载、renderD128 出现，一次性解决引导 + GPU 栈。
+    6.18.49 内核已在本板、本盘、本 DTB、本引导链上实机验证可启动。
+  路线二 保持同源 6.18.21，串口差分 + initramfs 文件级对比定位
+    usb-storage 未绑定环节后修源码，形态最干净但成本更高。
+  路线三 以当前 F 盘作临时可运行盘，但必须登记三项未闭环：
+    GPU 内核模块层、kernel.img.md5 不一致、degraded 6 个 mount。
+  配套：CI 闸门补「kernel.img 内核版本 == SYSTEM /lib/modules 版本」
+    判据（现有闸门只校验六特征字节形态）；修 .md5 同步逻辑；
+    保留 G 盘为回退盘，F 盘当前状态先整盘备份。
+
+12.5 工具修正与待办
+  已修 tools/a311d_usb_boot_probe.py 判定 bug：内核打印
+    "Attached SCSI removable disk"，旧版只匹配 "Attached SCSI disk"，
+    曾把已就绪的 sdX 误判为「未出现」；结论提示改为区分
+    「启动盘场景 / 对插数据盘场景」。
+  [未执行] HDMI 画面与帧率验收、sway 渲染后端确认、
+    SYSTEM 全量 md5、kernel.img.md5 明文、initramfs 文件级对比、
+    6.18.21 缺陷定位、任何构建脚本修改。
+  [不得写] 「已修复」「移植完成」「GPU 栈正常」「前端完全可用」
+    「panfrost 已工作」「已定位根因」。
 
 ================================================================================
 本文所有结论均带证据分级；[未执行] 项不得在后续汇报中写成已完成。

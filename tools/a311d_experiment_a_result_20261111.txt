@@ -266,4 +266,41 @@ A311D / AURKNIX 单变量实验 A 实机结果 —— 引导失败根因收敛�
   21:48「这份镜像可以刷盘」的分级结论仍然成立：只覆盖离线完整性
   与六特征，不代表板级可启动。本轮进一步说明：离线全 PASS 与
   板级可启动之间，还隔着「kernel.img 与板级 USB 存储栈的兼容性」。
+
+--------------------------------------------------------------------------------
+第八节  补记：2026-11-11 22:23 活体验收（本报告最新状态）
+--------------------------------------------------------------------------------
+  本节与前文冲突处以本节为准。完整报告：
+  tools/a311d_live_acceptance_20261111.txt（HANDOFF 第十二节同步）
+
+  1. 系统已正式进入，192.168.31.7 / root / rocknix，SSH 可达，
+     三分区挂载与首启扩容完成；sway.service + essway.service
+     均 active/running，NRestarts=0。[实证-活体] 第五节「系统是否
+     跑完、SSH 是否可达均 [未执行]」至此关闭。
+
+  2. 第四节 4.4 的 P0 串口证据已由活机 dmesg 补齐：3.636 usb-storage
+     detected -> 3.642 scsi host0 -> 4.736 [sda] Attached SCSI
+     removable disk，USB 序列号 7419751033367614176 与 F 盘一致。
+     与 11-10 失败日志差分显示：USB 枚举两侧一致，差异在枚举后的
+     usb-storage 绑定。盘侧排除获得活体闭环；内核本体与内建
+     initramfs 仍未文件级分离。
+
+  3. 第五节风险 2 的预判被实机推翻：版本混刷没有阻止前端服务拉起。
+     正确表述是「服务编排层已通、GPU 内核模块层未通」：
+     /lib/modules/6.18.49 无 modules.dep，mali_kbase 加载失败，
+     dmesg 无 panfrost 记录，/dev/dri 仅 card0（meson VPU），
+     无 renderD128；gpu_stack_check --live PASS 4 / FAIL 4 /
+     VERDICT=FAIL。HDMI 画面与帧率仍 [未执行]。
+
+  4. /flash md5 三方闭环：kernel.img dd3cafaa...、dtb.img
+     0fee9ffd...、cfgload 1a3a799f...、aml_autoscript 21e3fb29...，
+     与 G 盘源 / 仓库 bootkit 一致。另发现 kernel.img.md5 记录
+     仍是旧 6.18.21 值、盘内多出 kernel.img.beck（原内核备份），
+     不影响启动但影响 OTA 校验。
+
+  5. 修复路线重排：路线一（同源 6.18.49 构建，KERNEL/SYSTEM 同源，
+     让 panfrost.ko 可加载）因 6.18.49 内核已在本板实机验证而
+     成为首选；路线二/三见验收报告第四节。
+
+  [不得写] 「已修复」「移植完成」「GPU 栈正常」「前端完全可用」。
 ================================================================================

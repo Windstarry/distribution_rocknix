@@ -102,18 +102,22 @@ def verdict(d):
         ("registered new interface driver usb-storage", "usb-storage 驱动注册"),
         ("USB Mass Storage device detected", "大容量存储接口识别"),
         ("scsi host", "SCSI host 建立"),
-        ("Attached SCSI disk", "sdX 块设备就绪"),
+        # 内核实际打印的是 "Attached SCSI removable disk"（U 盘）或
+        # "Attached SCSI disk"（硬盘盒），旧版只匹配后者会误判为未出现。
+        ("Attached SCSI", "sdX 块设备就绪"),
     ):
         lines.append("   %-24s : %s" % (desc, "出现" if key.lower() in dm.lower() else "未出现"))
 
     lines.append("4. 结论提示")
     if not cbm:
         lines.append("   AURKNIX 盘未插入，本轮只能作为基线，无法判定盘侧问题。")
-    elif roknix and "Attached SCSI disk" in dm:
-        lines.append("   良好内核可以识别 AURKNIX 盘且 LABEL 正确 -> "
-                     "盘体与卷标无问题，故障在 AURKNIX 侧启动链/DTB/U-Boot env。")
-        lines.append("   建议：把 20261109-bootsafe-edidmode.img 刷到该盘做交叉验证，")
-        lines.append("         或用串口读 U-Boot 的 env print / 实际 dtb_mem_addr。")
+    elif roknix and "Attached SCSI" in dm:
+        lines.append("   当前运行内核能完整识别该 CBM2199 盘，且 LABEL=ROCKNIX 正确")
+        lines.append("   -> 盘体与卷标无问题，盘侧不兼容可排除。")
+        lines.append("   场景判读：若该盘就是本次启动盘（/flash 由它挂载），本结论只证明")
+        lines.append("     内核侧可用，故障应收敛到另一个 kernel.img（2026-11-11 实验 A")
+        lines.append("     已据此把盘侧排除）；若该盘是对插的数据盘，则按双盘对照")
+        lines.append("     继续检查 AURKNIX 侧启动链 / DTB / U-Boot env。")
     elif not roknix:
         lines.append("   良好内核下也看不到 LABEL=ROCKNIX -> 盘侧问题：")
         lines.append("   分区表/BPB 卷标、刷写完整性，或该 CBM2199 盘在 Linux 下完成不了")
