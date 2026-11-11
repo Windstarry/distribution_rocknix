@@ -2,10 +2,11 @@
 A311D / AURKNIX 移植交接文档（当前状态总览）
 ================================================================================
 生成时间：2026-11-11 00:30（北京时间 GMT+8）
-最近更新：2026-11-11 22:29（第十二节，活体验收：系统进入、前端服务拉起）
+最近更新：2026-11-11 22:45（第十三节，HDMI 有画面但卡顿的渲染层归因）
 文档定位：接手人第一阅读入口。本文自包含，覆盖并取代此前各轮口头结论。
-最新状态：以第十二节为准；活体验收报告见
-          tools/a311d_live_acceptance_20261111.txt
+最新状态：以第十三节为准；卡顿归因报告见
+          tools/a311d_render_performance_20261111.txt
+          活体验收报告见 tools/a311d_live_acceptance_20261111.txt
           实验 A 结果报告见 tools/a311d_experiment_a_result_20261111.txt
 历史流水账：tools/a311d_handoff_20261110.txt（1264 行，补记一~十一）
 完整时间线：tools/a311d_port_timeline_20261110.txt（370 行，阶段 A~G）
@@ -17,9 +18,10 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
   [推断]   基于实证的工程推论，尚未由板级验证确认
   [未执行] 尚未进行的动作，禁止写成已完成或已通过
 禁止表述：「已修复」「移植完成」「GPU 栈正常」「前端完全可用」
-          「panfrost 已工作」「已定位根因」。
+          「panfrost 已工作」「已定位根因」「卡顿根因已完全定位」。
 允许表述（须带限定）：「系统可运行」「前端服务已拉起（sway + essway
-          active）」——服务层事实见第十二节，不等于 GPU 栈闭环。
+          active）」「HDMI 有画面但非常卡顿」——服务层事实见第十二节，
+          渲染层事实见第十三节，均不等于 GPU 栈闭环。
 
 --------------------------------------------------------------------------------
 第一节  一句话结论
@@ -352,7 +354,8 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
            /lib/modules/6.18.49/modules.dep 缺失、panfrost/mali_kbase
            未加载、/dev/dri 仅 card0（meson VPU）、无 renderD128；
            gpu_stack_check --live 判定 PASS 4 / FAIL 4 / VERDICT=FAIL。
-           HDMI 实际画面、帧率、可交互性 [未执行]。
+           HDMI 画面用户目视（22:45）：有输出但非常卡顿，见第十三节；
+           帧率 / 可交互性量化 [未执行]。
   [未执行] 构建脚本修复（内核版本对齐或 6.18.21 缺陷定位）。
 
   未验证假设一 [推断]：黄金 DTB 编译自 6.18.49 内核 DTS，与 CI 同源
@@ -475,10 +478,14 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
        sway/essway、/dev/dri、/flash md5 三方闭环），见第十二节。
   [已部分完成] 0~16 s USB 绑定链已由活机 dmesg 补齐（3.636~4.736 s
        完整链），串口原始日志仍缺，用于分离内核本体与内建 initramfs。
-  P0  （用户侧）HDMI 实际画面 / 帧率 / 可交互性验收；确认 sway
-       渲染后端（WLR_RENDERER / GBM_BACKEND / 是否软件渲染）。
-  P0  （用户侧）按第十二节 12.4 选修复路线，优先「同源 6.18.49
-       构建」，让 panfrost.ko 可加载、出现 renderD128。
+  [已完成 22:45] HDMI 画面用户目视：有输出但非常卡顿；4K 输出、
+       DRM 节点、渲染库、EGL 报错、CPU 已取证（第十三节）。
+  P0  （用户侧）可逆缓解：swaymsg output HDMI-A-1 mode 1920x1080@60Hz，
+       目视对比并分离「分辨率」与「无 GPU 加速」两个变量权重。
+  P0  （用户侧）确认 sway 实际渲染后端；22:39 后 SSH 被设备重置，
+       需等设备空闲或重启后补采。
+  P0  （用户侧）按第十二节 12.4 / 第十三节 13.4 选修复路线，
+       优先「同源 6.18.49 构建」，让 panfrost.ko 可加载、出现 renderD128。
   P0  （决策）按第十一节 11.4 三选一：内核版本对齐 6.18.49 同源构建 /
        定位并修 6.18.21 kernel.img 具体缺陷 / 临时交付并登记混刷。
   P1  先备份 F 盘当前整盘状态（唯一「CI 六特征 + 可进初始化」组合），
@@ -709,7 +716,8 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
   用户此前「只能 panfrost 起前端」的纠正亦据此理解：是 libmali 栈
     在版本混刷下不可用，不是硬件能力上限。
   sway 进程 CPU 37.4% 且无 GPU 渲染节点，疑似软件渲染 [推断]；
-    HDMI 实际画面、帧率、可交互性 [未执行]。
+    22:45 用户目视 HDMI 有画面但非常卡顿，该推断获强支撑，但
+    wlroots 实际渲染后端仍未由日志确认；详见第十三节。
 
 12.4 修复路线重排（新证据使路线一风险显著下降）
   路线一【推荐】同源 6.18.49 构建：把 packages/linux/package.mk
@@ -730,11 +738,80 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
     "Attached SCSI removable disk"，旧版只匹配 "Attached SCSI disk"，
     曾把已就绪的 sdX 误判为「未出现」；结论提示改为区分
     「启动盘场景 / 对插数据盘场景」。
-  [未执行] HDMI 画面与帧率验收、sway 渲染后端确认、
-    SYSTEM 全量 md5、kernel.img.md5 明文、initramfs 文件级对比、
-    6.18.21 缺陷定位、任何构建脚本修改。
+  [已完成 22:45] HDMI 画面用户目视、4K 输出 / DRM 节点 / 渲染库 /
+    CPU 取证、kernel.img.md5 明文；见第十三节。
+  [未执行] sway 实际渲染后端日志、1080p 对照实验、SYSTEM 全量 md5、
+    initramfs 文件级对比、6.18.21 缺陷定位、任何构建脚本修改。
   [不得写] 「已修复」「移植完成」「GPU 栈正常」「前端完全可用」
     「panfrost 已工作」「已定位根因」。
+
+--------------------------------------------------------------------------------
+第十三节  补记：2026-11-11 22:45 渲染层归因（全文最新状态）
+--------------------------------------------------------------------------------
+  本节是全文最新状态，与前文（含第十二节 12.3 / 12.5）冲突处以本节为准。
+  完整报告：tools/a311d_render_performance_20261111.txt
+  原始凭证：E 盘 20261111/live_render_perf_20261111_2240.txt、
+            live_renderer_forensics_20261111_2245.txt
+
+13.1 用户反馈与新结论
+  用户目视「HDMI 画面有输出，但非常卡顿」，补齐此前 [未执行] 的
+  HDMI 验收项。三层状态更新为：
+    引导层  [已通]  实验 A + 六特征实机验证
+    服务层  [已通]  sway + essway active/running
+    渲染层  [未通]  有画面、无硬件加速、明显卡顿
+  卡顿由两个叠加因素构成：3840x2160@60Hz / scale 1.0 的 829 万
+  像素每帧，叠加无 GPU 渲染节点的 CPU 合成。[实证 + 推断]
+
+13.2 本轮新增实证
+  输出：sway 1.11 current_mode 3840x2160@60Hz，scale 1.0；
+        EDID modes 含 1920x1080 / 1280x720，降模式硬件可行；
+        /storage/.config/sway/config 未固定 mode，运行时改动可逆。
+  DRM：/dev/dri 只有 card0（meson-drm / ff900000.vpu / amlogic,
+       meson-g12a-vpu），无 renderD128；card0 只负责扫描输出。
+  内核：uname 6.18.49，/proc/config.gz 含 CONFIG_DRM_PANFROST=m，
+       但 /lib/modules/6.18.49 为空、modprobe -n panfrost FATAL；
+       panfrost.ko 125,384 B 与 mali_kbase.ko 都在
+       /usr/lib/kernel-overlays/base/lib/modules/6.18.21/。
+  渲染：sway(2903) 映射 libEGL_mesa / libGLESv2 / libgbm /
+       libpixman-1，/memfd:mesa-shared，未映射 panfrost_dri.so；
+       WLR_DRM_DEVICES=/dev/dri/card0、WLR_BACKENDS=drm,libinput。
+       essway(2942) journal：libEGL failed to get driver name for fd -1、
+       MESA-LOADER failed to retrieve device information、
+       egl: failed to create dri2 screen。
+  负载：ES 96.6% CPU（单核打满，累计 15:39）、sway 21.6%、
+       6 核全局 idle 76.8%、load 1.10、无 swap 但内存非主因。
+  .md5 明文（补齐 P1 缺口）：/flash/kernel.img.md5 =
+       b6e2f57e40276a7878a4ad2a0b8955e7  target/KERNEL，
+       仍指向 6.18.21，坐实「替换内核未同步 .md5」的推断。
+  源码核实：package.mk 第 68~71 行 6.18.21 由
+       S922X|RK3399|RK3566|A311D 四设备共用，不能全局替换；
+       kernel.org v6.x/linux-6.18.49.tar.xz HTTP 200（154,627,808 B）；
+       A311D linux.aarch64.conf 含 CONFIG_DRM_PANFROST=m；
+       patches/mainline 5 个通用驱动补丁需 dry-run 验证。
+
+13.3 不得越级的结论
+  不得写「卡顿根因已完全定位」：4K 分辨率与无 GPU 加速的权重
+       未做单变量对照；wlroots 实际后端（pixman 或 Mesa 软件 GLES）
+       未由日志确认；同源 6.18.49 构建尚未构建、尚未实测。
+  不得写「切 libmali 即可解决」：mali_kbase.ko 同样是 6.18.21 模块。
+  保持「已修复 / 移植完成 / GPU 栈正常 / 前端完全可用」为禁止表述。
+
+13.4 下一步
+  P0  可逆运行时缓解（不改盘、不重建）：
+      export SWAYSOCK=/run/0-runtime-dir/sway-ipc.0.sock
+      swaymsg output HDMI-A-1 mode 1920x1080@60Hz
+      回退 mode 3840x2160@60Hz；持久化则写入 sway config。
+      该实验同时分离「分辨率」与「无 GPU 加速」两个变量。
+  P0  根因修复路线一（同源 6.18.49），改动清单见卡顿归因报告 4.2：
+      拆分 package.mk 的 A311D 单独 case（严禁改另外三设备）、
+      同步 linux.aarch64.conf 与 5 个补丁 dry-run、
+      完整重建后验收 modules.dep / panfrost / renderD128 / 流畅度。
+      注意：这只保证 panfrost 开源栈可用，用户原始诉求的
+      libmali / mali_kbase vendor 栈仍需单独验证。
+  P1  CI 闸门补「kernel.img 版本 == SYSTEM /lib/modules 版本」判据；
+      修 .md5 同步逻辑；F 盘当前状态整盘备份、G 盘保留回退。
+  P1  22:39 后设备 SSH 连接被重置（ping 1 ms 通、非宕机），
+      推测与 ES 单核满载 + sshd 连续连接限流有关，补采需等空闲。
 
 ================================================================================
 本文所有结论均带证据分级；[未执行] 项不得在后续汇报中写成已完成。

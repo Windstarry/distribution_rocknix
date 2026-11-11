@@ -1,0 +1,282 @@
+================================================================================
+A311D / AURKNIX  HDMI 画面卡顿归因报告
+================================================================================
+生成时间：2026-11-11 22:45（北京时间 GMT+8）
+采集对象：192.168.31.7 / root / rocknix（活机，F 盘 CBM2199 启动）
+采集方式：SSH 纯只读取证，未修改设备文件、未重启服务、未改构建脚本
+原始凭证：E:/A311d/AURKNIX-image-A311D-20261031/AURKNIX-image-A311D-20261111/
+            live_render_perf_20261111_2240.txt
+            live_renderer_forensics_20261111_2245.txt
+证据分级：[实证] 活体/字节取证；[推断] 工程推论；[未执行] 尚未验证
+
+--------------------------------------------------------------------------------
+一、结论摘要
+--------------------------------------------------------------------------------
+1. 用户反馈「HDMI 画面有输出，但非常卡顿」属实，并补齐了上一轮
+   [未执行] 的 HDMI 目视验收项：画面存在，性能不达标。[实证-用户目视]
+
+2. 卡顿由两个叠加因素构成，均有活体证据：
+   a) 输出被固定在 3840x2160@60Hz、scale 1.0，单帧 829 万像素；[实证]
+   b) 系统没有可用的 GPU 渲染节点，合成/绘制由 CPU 承担。[实证 + 推断]
+
+3. 没有 GPU 渲染节点的原因是版本混刷：运行内核 6.18.49，
+   而 panfrost.ko / mali_kbase.ko 只存在于 6.18.21 模块目录，
+   /lib/modules/6.18.49 为空、modprobe 失败。[实证]
+
+4. 因此本轮状态口径为：
+   「引导层已通、服务层已通、渲染层未通」。
+   禁止表述：「已修复」「移植完成」「GPU 栈正常」「前端完全可用」
+             「panfrost 已工作」「卡顿根因已定位到某个具体函数」。
+
+--------------------------------------------------------------------------------
+二、数据呈现
+--------------------------------------------------------------------------------
+2.1 显示输出与分辨率 [实证-活体 swaymsg / sysfs]
+  sway 1.11，配置 /storage/.config/sway/config
+  current_mode : 3840 x 2160 @ 60000 (60 Hz)
+  scale        : 1.0      scale_filter : nearest
+  transform    : normal   allow_tearing : yes   max_render_time : 0 (off)
+  /sys/class/drm/card0-HDMI-A-1/status = connected
+  dmesg: [drm] forcing HDMI-A-1 connector on
+         [drm] Initialized meson 1.0.0 for ff900000.vpu on minor 0
+         fb0: mesondrmfb frame buffer device
+  EDID modes 列表同时提供 1920x1080（多项）、1280x720、1600x900 等
+  低分辨率模式，说明降模式在硬件层面可行。[实证]
+  /storage/.config/sway/config 只写了 transform 0 / bg / allow_tearing /
+  max_render_time off，未固定 mode，运行时可用 swaymsg 改且不落盘。[实证]
+
+2.2 DRM 节点与内核模块 [实证-活体]
+  /dev/dri/                只有 card0（226,0），无 card1、无 renderD128
+  /dev/dri/by-path/        platform-ff900000.vpu-card -> ../card0
+  card0 uevent             DRIVER=meson-drm / OF_NAME=vpu /
+                           OF_COMPATIBLE_0=amlogic,meson-g12a-vpu
+  /sys/class/drm/          card0 / card0-HDMI-A-1 / version
+  判读：card0 是 Amlogic VPU 显示控制器，只负责扫描输出，不提供 3D
+        渲染；GPU（Bifrost G52）的渲染节点必须由 panfrost/mali 驱动
+        另行注册。[实证 + 推断]
+
+  uname -r                 6.18.49
+  /proc/config.gz          CONFIG_DRM_PANFROST=m、CONFIG_DRM_MESON=y
+  /lib/modules/6.18.49/    空目录，无 modules.dep
+  modprobe -n panfrost     FATAL: Module panfrost not found in
+                           directory /lib/modules/6.18.49
+  lsmod                    空（无任何已加载内核模块）
+  实际模块所在位置：
+    /usr/lib/kernel-overlays/base/lib/modules/6.18.21/modules.dep 19,903 B
+    .../6.18.21/kernel/drivers/gpu/drm/panfrost/panfrost.ko 125,384 B
+    .../6.18.21/mali-bifrost/mali_kbase.ko
+  判读：6.18.49 内核自身编译了 panfrost 支持（=m），但可用的 .ko
+        是给 6.18.21 编译的，vermagic 不匹配，无法加载。[实证]
+
+2.3 合成器与前端的渲染路径 [实证-活体 proc maps / journal]
+  sway PID 2903 : /usr/bin/sway -V，VmRSS 189,740 kB，2 threads
+  环境变量      : WLR_DRM_DEVICES=/dev/dri/card0
+                  WLR_BACKENDS=drm,libinput
+                  WLR_CON=HDMI-A-1
+                  WLR_LIBINPUT_NO_DEVICES=1
+                  XDG_RUNTIME_DIR=/var/run/0-runtime-dir
+                  未见 WLR_RENDERER / GBM_BACKEND /
+                  LIBGL_ALWAYS_SOFTWARE 显式设置
+  sway 已映射的渲染库（/proc/2903/maps 去重）：
+    libEGL.so.1.1.0 / libEGL_mesa.so.0.0.0
+    libGLESv2.so.2.1.0 / libGLdispatch.so.0.0.0
+    libgbm.so.1.0.0 / libpixman-1.so.0.46.2 / memfd:mesa-shared
+    未映射 swrast_dri.so、panfrost_dri.so、meson_dri.so
+  /usr/lib/dri/ 下 swrast_dri.so / kms_swrast_dri.so / meson_dri.so /
+    panfrost_dri.so 全部是到 libdril_dri.so 的符号链接（ROCKNIX Mesa
+    统一 DRI 加载器打包方式），不能据此判断实际选中的驱动。[实证]
+
+  essway / EmulationStation PID 2942：
+    emulationstation --log-path /var/log
+    journal 关键报错：
+      libEGL warning: failed to get driver name for fd -1
+      libEGL warning: MESA-LOADER: failed to retrieve device information
+      libEGL warning: egl: failed to create dri2 screen
+    含义：DRI2/EGL 硬件路径初始化失败，只能退回 CPU 绘制或反复重试。
+          [实证-日志 + 推断]
+
+  证据缺口：sway 同时映射 libGLESv2/libEGL_mesa 与 libpixman，
+  wlroots 可能链接了多个后端；实际选用 pixman 还是 Mesa 软件 GLES
+  未由日志确认（sway.service journal 无渲染器行、/var/log 未命中）。
+  因此只能写「CPU 合成路径」，不得写「已确证 pixman renderer」。[推断]
+
+2.4 CPU 与内存 [实证-活体 top / ps]
+  top 09:38:38，up 24 min：
+    %Cpu(s) 17.4 us / 2.9 sy / 76.8 id，6 核
+    load average 0.97 / 1.06 / 1.15
+    Mem 1806.8 MiB total，29.0 free，757.2 used，1187.9 buff/cache
+    Swap 0
+  PID 2942 emulationstatio   96.6% CPU（单核打满），累计 15:39.13
+            VmRSS 384,588 kB，18 threads
+  PID 2903 sway              21.6% CPU，VmRSS 189,740 kB，2 threads
+  判读：4K 每帧 829 万像素由 CPU 合成时，ES 单核持续满载是典型
+        软件渲染特征；全局 idle 76.8% 是 6 核平均值，不能用来否定
+        单核瓶颈。内存无 swap 但 available 约 1050 MiB，不是主因。
+        [实证 + 推断]
+
+2.5 系统身份与配置 [实证-活体 + 实证-本地源码]
+  /etc/os-release : OS_NAME=ROCKNIX / OS_VERSION=20261111 /
+                    BUILD_ID=a901729de2... / BUILD_BRANCH=a311d /
+                    HW_DEVICE=A311D（branding 未改，属独立清理项）
+  /storage/.config/gpu.driver 不存在；get_setting 读到 panfrost
+    来自 projects/ROCKNIX/packages/rocknix/package.mk 第 34~38 行
+    对 system.cfg 的默认注入。[实证-源码]
+  /etc/profile.d/090-ui_service : UI_SERVICE="sway.service essway.service"
+  /etc/profile.d/999-export 第 59 行把 WLR_BACKENDS 列入导出清单
+  /flash/kernel.img.md5 明文（本轮新采到，补齐上一轮 P1 缺口）：
+    b6e2f57e40276a7878a4ad2a0b8955e7  target/KERNEL
+    即仍指向旧 6.18.21 内核，与当前 6.18.49 kernel.img
+    （dd3cafaa7aa551fd6ef135925f48c765）不一致。[实证-活体]
+    坐实上一轮「替换内核未同步 .md5 记录」的推断；影响 OTA 校验，
+    不影响 U-Boot（cfgload 直接 fatload，不校验 .md5）。
+
+2.6 源码侧可行性核实 [实证-本地 + 实证-网络只读]
+  projects/ROCKNIX/packages/linux/package.mk 第 68~71 行：
+    S922X|RK3399|RK3566|A311D)  PKG_VERSION="6.18.21"
+    PKG_URL="https://www.kernel.org/.../linux-${PKG_VERSION}.tar.xz"
+  => 该版本号由 4 个设备共用，不能全局替换；须为 A311D 拆出单独
+     case，否则会连带改动 S922X / RK3399 / RK3566。[实证-源码]
+  kernel.org v6.x/linux-6.18.49.tar.xz：HTTP 200，
+    Content-Length 154,627,808 B，Last-Modified 2026-09-02，
+    即路线一的源码 tarball 可得。[实证-网络 HEAD]
+  projects/ROCKNIX/devices/A311D/linux/linux.aarch64.conf：
+    头部注释 "Linux/arm64 6.18.21 Kernel Configuration"，
+    CONFIG_LOCALVERSION=""，CONFIG_DRM_MESON=y，
+    CONFIG_DRM_PANFROST=m（与运行内核配置一致）。[实证-源码]
+  projects/ROCKNIX/packages/linux/patches/mainline/ 共 5 个补丁：
+    gpiolib-of / input-polldev / pwm_set_period / adc-keys /
+    Bluetooth rtl8733bu，均为跨版本通用驱动，须对 6.18.49 做
+    patch --dry-run 验证，不能直接假定可套用。[实证-源码 + 推断]
+
+2.7 采集环境异常 [实证]
+  22:37~22:41 连续 SSH 短连接后，设备侧出现 banner 读不到 /
+  WinError 10054 连接重置；同期 ping 1 ms、0% 丢包，设备未宕机。
+  推测与 ES 单核满载 + sshd 连续连接限流有关。[实证 + 推断]
+  未取到项：ES 进程 maps、sway 渲染器日志明文、SYSTEM 全量 md5。
+
+--------------------------------------------------------------------------------
+三、原因分析
+--------------------------------------------------------------------------------
+3.1 因果链 [实证 + 推断]
+  实验 A 为了让系统能起来，把 kernel.img 换成实机验证过的 6.18.49，
+  但 SYSTEM 仍是 20261111 CI 产物，其模块树是 6.18.21
+    -> /lib/modules/6.18.49 为空、panfrost.ko 加载不了
+    -> DRM 只剩 meson VPU 的 card0，没有 renderD128
+    -> sway 只能把 /dev/dri/card0 当 dumb/软件合成设备；
+       ES 的 libEGL DRI2 硬件路径初始化失败
+    -> 3840x2160@60Hz、scale 1.0 的 829 万像素/帧由 CPU 绘制
+    -> ES 单核 96.6% 持续满载，sway 21.6%
+    -> 用户目视「有画面但非常卡顿」
+
+3.2 直接因素与根本因素的区分
+  直接因素：4K 分辨率 + CPU 合成。降分辨率可显著减少填充量，
+            但只是缓解，不产生 GPU 加速。[推断，未实测]
+  根本因素：KERNEL 6.18.49 与 SYSTEM 模块 6.18.21 版本混刷。
+            这一点同时解释了上一轮 gpu_stack_check 的 4 项 FAIL
+            （版本不一致 / modules.dep 缺失 / 无 GPU 模块 /
+            无 render node）。[实证]
+
+3.3 与上一轮推断的关系（修正而非推翻）
+  上一轮写「sway 37.4% CPU 且无 GPU 渲染节点，疑似软件渲染，
+  HDMI 画面待目视」。本轮用户目视「有画面但非常卡顿」，
+  加上 4K 模式、libpixman/Mesa EGL 映射、ES EGL 失败日志、
+  单核 96.6% CPU，使「软件渲染导致卡顿」的推断获得强支撑，
+  但 wlroots 具体后端仍未由日志确认，仍标注 [推断]。
+  同时确认：版本混刷不阻止画面输出，只阻止硬件加速。
+
+3.4 不得越级的结论
+  - 不得写「卡顿根因已定位到 panfrost 驱动缺失」：还包含 4K 分辨率
+    这一独立放大因素，两者权重未做单变量对照。
+  - 不得写「同源 6.18.49 构建一定能解决卡顿」：未构建、未实测。
+  - 不得写「切换 libmali 就能解决」：libmali / mali_kbase 同样是
+    6.18.21 模块，当前同样不可加载。[实证-模块路径]
+
+--------------------------------------------------------------------------------
+四、建议方案
+--------------------------------------------------------------------------------
+4.1 P0 立即可做的可逆缓解（不重建、不改盘、不落盘）
+  在设备上执行（或由我在 SSH 恢复后代为执行并采集前后 CPU）：
+    export SWAYSOCK=/run/0-runtime-dir/sway-ipc.0.sock
+    swaymsg output HDMI-A-1 mode 1920x1080@60Hz
+  回退：
+    swaymsg output HDMI-A-1 mode 3840x2160@60Hz
+  若需持久化，在 /storage/.config/sway/config 追加一行：
+    output HDMI-A-1 mode 1920x1080@60Hz
+  说明：
+    a) 1920x1080 在 EDID modes 列表中确实存在，像素量降为 1/4；[实证]
+    b) 当前 config 未固定 mode，运行时改动重启即失效，风险可控；[实证]
+    c) 不建议用 scale 2 提速——合成缓冲仍是 4K，不减少填充量；[推断]
+    d) 该实验同时可分离「分辨率」与「无 GPU 加速」两个变量的权重，
+       是本轮唯一还缺的单变量对照。[建议，未执行]
+
+4.2 P0 根因修复：同源 6.18.49 构建（路线一，已做前置核实）
+  目标：KERNEL 与 SYSTEM 同为 6.18.49，/lib/modules/6.18.49 有完整
+        modules.dep，panfrost.ko 可加载，/dev/dri 出现 renderD128，
+        使 sway/ES 走硬件 GLES；同时保留已实机验证的引导链。
+  改动清单（不是「改一行」）：
+    1) projects/ROCKNIX/packages/linux/package.mk 第 68~71 行：
+       把共用 case 拆成两段——
+         S922X|RK3399|RK3566) 维持 6.18.21
+         A311D)                PKG_VERSION="6.18.49"，PKG_URL 沿用
+                               kernel.org v6.x 模板
+       严禁把 6.18.21 全局替换掉。
+    2) projects/ROCKNIX/devices/A311D/linux/linux.aarch64.conf：
+       同步版本头注释，按 6.18.49 跑 oldconfig/savedefconfig 复核新增项，
+       必须保留 CONFIG_DRM_PANFROST=m 与 CONFIG_DRM_MESON=y。
+    3) packages/linux/patches/mainline/ 5 个补丁对 6.18.49 做
+       patch --dry-run，冲突项单独适配。
+    4) 完整重建后验收：uname -r == /lib/modules 目录名、
+       modules.dep 存在、lsmod 有 panfrost、/dev/dri/renderD128 出现、
+       sway/ES 渲染库含 panfrost 路径、目视流畅度。
+    5) 同源达成后再单独验证用户原始诉求的 libmali / mali_kbase
+       vendor 栈；本轮路线一只保证 panfrost 开源栈可用，
+       不能把两者混为一谈。
+  前置核实结果：kernel.org 6.18.49 tarball HTTP 200 可得；
+        6.18.49 内核已在本板、本盘、本 DTB、本引导链实机启动；
+        运行内核 /proc/config.gz 已含 CONFIG_DRM_PANFROST=m。
+  剩余风险：补丁跨小版本适配、6.18.49 defconfig 差异、
+        CI 仍需实跑；均 [未执行]。
+
+4.3 其他路线（保留，不因本轮证据升级）
+  路线二：保持同源 6.18.21，串口差分 + 内建 initramfs 文件级对比，
+          定位 CBM2199 上 usb-storage 未绑定环节后修源码。
+          形态最干净，但需 LZO1X 解压能力，成本最高。
+  路线三：以当前 F 盘组合临时交付，必须登记版本混刷、
+          kernel.img.md5 不一致、degraded 6 个 tmp-*.mount；
+          若叠加 4.1 的 1080p 持久化可作为临时可用方案。
+          不建议作为最终镜像发布。
+
+4.4 配套改造（无论选哪条路线）
+  1) tools/a311d_ci_bootchain_check.py 增加判据
+     「kernel.img 内核版本 == SYSTEM /lib/modules 目录版本」，
+     把版本混刷变成出图前 FAIL；现有闸门只校验六特征字节形态，
+     不校验版本一致性，也不校验板级 USB 存储兼容性。
+  2) 补一条「出图后渲染层 WARN」：/dev/dri 是否含 render node、
+     sway 是否映射硬件 DRI 驱动（需活机采集，CI 只能做静态提示）。
+  3) 修 /flash/kernel.img.md5 同步逻辑，避免 OTA 踩坑。
+  4) 保留 G 盘（Kingston / GOLD）为唯一完整回退盘，不擦除；
+     F 盘当前状态先整盘镜像备份后再继续实验。
+
+--------------------------------------------------------------------------------
+五、状态与限制
+--------------------------------------------------------------------------------
+  [已完成] HDMI 目视验收（用户：有画面、非常卡顿）；4K 输出模式、
+           DRM 节点、内核模块版本、渲染库映射、EGL 报错、CPU/内存、
+           .md5 明文、源码版本定义与 tarball 可得性的只读取证。
+  [已完成] 补齐上一轮 P1 缺口：/flash/kernel.img.md5 明文，
+           证实仍指向 6.18.21。
+  [未执行] 1080p 运行时对照实验、sway 实际渲染后端日志确认、
+           ES 进程 maps、SYSTEM 全量 md5、initramfs 文件级对比、
+           6.18.21 usb-storage 缺陷定位、任何构建脚本修改、重新构建。
+  [未执行] SSH 22:39 后被设备侧重置，后续补采需等设备空闲或重启。
+  [不得写] 「已修复」「移植完成」「GPU 栈正常」「前端完全可用」
+           「panfrost 已工作」「卡顿根因已完全定位」
+           「同源 6.18.49 构建一定解决卡顿」。
+  [可以写] 「系统可运行、前端服务已拉起、HDMI 有画面但卡顿」
+           「卡顿由 4K 输出与 CPU 合成叠加导致」
+           「根因是 KERNEL 6.18.49 与 SYSTEM 模块 6.18.21 版本混刷」
+           「盘侧排除、六特征实机通过」。
+
+================================================================================
+本文所有结论均带证据分级；[未执行] 项不得在后续汇报中写成已完成。
+================================================================================

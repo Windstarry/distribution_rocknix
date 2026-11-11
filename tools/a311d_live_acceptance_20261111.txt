@@ -3,13 +3,15 @@ A311D / AURKNIX 2026-11-11 22:23 活体验收报告
 实验 A 组合：20261111 CI 镜像 + 6.18.49 kernel.img，正式进入系统且前端服务拉起
 ================================================================================
 时间      ：2026-11-11 22:23 ~ 22:29（北京时间 GMT+8）
+            22:45 补记第七节（HDMI 画面卡顿归因，未重新写入前文结论）
 设备      ：192.168.31.7  root/rocknix  A311D / CAINIAO CNIoT-CORE
 形态      ：F 盘（048d:1234 CBM2199 32 GB）启动，仅 kernel.img 换为
             G 盘 6.18.49 版本，其余全部保持 20261111 CI 产物
 取证方式  ：SSH/paramiko 纯只读采集，未修改设备任何文件
-关联文档  ：tools/a311d_HANDOFF.txt（第十二节）
+关联文档  ：tools/a311d_HANDOFF.txt（第十二、十三节）
             tools/a311d_experiment_a_result_20261111.txt（实验 A 结果）
             tools/a311d_boot_disk_diagnosis_20261111.txt（双盘归因诊断）
+            tools/a311d_render_performance_20261111.txt（卡顿归因报告）
 
 证据分级：
   [实证-活体] SSH 命令输出、dmesg、systemctl、md5sum 实读
@@ -152,9 +154,12 @@ A311D / AURKNIX 2026-11-11 22:23 活体验收报告
     SKIP  10 项（未提供解包 SYSTEM，非失败）
     SUMMARY PASS 4 / FAIL 4 / SKIP 10，VERDICT: FAIL - 不接受该构建
 
-  判读：sway 进程 37.4% CPU 且无 GPU 渲染节点，疑似走软件渲染或
-        DRM dumb buffer 路径。[推断] 实际显示画面、帧率、可交互性
-        尚未由 HDMI 侧验证，[未执行]。
+  判读（22:45 补记，详见第七节）：sway 进程 37.4% CPU 且无 GPU
+        渲染节点，疑似走软件渲染或 DRM dumb buffer 路径。用户已目视
+        确认 HDMI 有画面但非常卡顿；22:37~22:41 补采到 3840x2160@60Hz
+        输出、libpixman / Mesa EGL 映射、ES 单核 96.6% CPU 与 EGL
+        DRI2 失败日志，使该推断获得强支撑。但 wlroots 具体后端
+        （pixman 还是 Mesa 软件 GLES）仍未由日志确认，仍标 [推断]。
 
 2.5 /flash 文件与三方 md5 闭环 [实证-活体 + 实证-字节]
 
@@ -217,13 +222,19 @@ A311D / AURKNIX 2026-11-11 22:23 活体验收报告
   用户此前「本机实测只能 panfrost 起前端」的纠正也应据此理解：
   这是 libmali 栈在版本混刷下不可用，不是硬件能力上限。
   [实证-活体；前端画面质量为推断]
+  22:45 补记：用户目视 HDMI 有画面但非常卡顿，说明版本混刷不阻止
+  画面输出，只阻止硬件加速；卡顿归因见第七节与卡顿归因报告。
 
 3.4 仍缺的证据
-  [P0] HDMI 实际画面 / 帧率 / 可交互性验证（用户目视或截图）。
-  [P0] sway 渲染后端确认（环境变量、/usr/lib/dri 内容、
-       WLR_RENDERER / GBM_BACKEND / LIBGL_ALWAYS_SOFTWARE）。
-       本轮 22:28 该组采集因 SSH 连续连接被设备重置而未取到。
-  [P1] /flash/kernel.img.md5 明文、SYSTEM 全量 md5。
+  [已完成 22:45] HDMI 画面用户目视：有输出、非常卡顿；分辨率
+       3840x2160@60Hz / scale 1.0、DRM 节点、内核模块版本、
+       渲染库映射、EGL 报错、CPU 占用均已取证（第七节）。
+  [仍缺 P0] sway 实际渲染后端日志（pixman 还是 Mesa 软件 GLES）、
+       ES 进程 maps；22:39 后 SSH 被设备侧重置，需等空闲重连。
+  [已完成 22:37] /flash/kernel.img.md5 明文 =
+       b6e2f57e40276a7878a4ad2a0b8955e7  target/KERNEL，
+       仍指向旧 6.18.21，坐实 2.5 (a) 的推断。
+  [P1] SYSTEM 全量 md5（1.4 GB 读取超时，未取）。
   [P1] 6.18.21 与 6.18.49 内建 initramfs 文件级对比
        （本机无 lzop / python-lzo，需 LZO1X 解压能力）。
   [P1] 6.18.21 kernel.img 在 CBM2199 上缺 usb-storage 绑定的
@@ -237,12 +248,18 @@ A311D / AURKNIX 2026-11-11 22:23 活体验收报告
         有完整 modules.dep，panfrost.ko / mali_kbase.ko 可加载，
         /dev/dri 出现 renderD128，前端从「进程 running」升级为
         「硬件加速可用」。
-  实现：把 projects/ROCKNIX/packages/linux/package.mk 第 69~71 行
-        A311D 的 PKG_VERSION 由 6.18.21 对齐到 6.18.49（建议只给
-        A311D 分支，S922X/RK3399/RK3566 另行评估），同步
-        linux.aarch64.conf 版本头与补丁兼容性，完整重建后
-        KERNEL/SYSTEM 同源；前置验证 kernel.org 6.18.49 tarball
-        可得、Amlogic 补丁可应用、CI 闸门通过。
+  实现（22:45 已做前置核实，不是「改一行」）：
+        1) projects/ROCKNIX/packages/linux/package.mk 第 68~71 行
+           的 6.18.21 由 S922X|RK3399|RK3566|A311D 四设备共用，
+           必须拆出 A311D 单独 case 并置 6.18.49，严禁全局替换；
+        2) 同步 devices/A311D/linux/linux.aarch64.conf 版本头并按
+           6.18.49 跑 oldconfig，保留 CONFIG_DRM_PANFROST=m；
+        3) packages/linux/patches/mainline/ 的 5 个补丁做 dry-run；
+        4) 完整重建后验收 modules.dep / panfrost / renderD128。
+  已核实：kernel.org v6.x/linux-6.18.49.tar.xz HTTP 200、
+        154,627,808 B（2026-09-02），源码可得；
+        运行内核 /proc/config.gz 已含 CONFIG_DRM_PANFROST=m。
+  仍 [未执行]：补丁适配、defconfig 差异、CI 实跑、板级复验。
   本轮证据支持度：6.18.49 内核已在同一块盘、同一套 DTB、
         同一套引导链上实机验证可启动，风险显著低于继续用 6.18.21。
 
@@ -277,9 +294,13 @@ A311D / AURKNIX 2026-11-11 22:23 活体验收报告
            "Attached SCSI removable disk"，旧版只匹配
            "Attached SCSI disk"，曾把已就绪的 sdX 误判为未出现；
            同时把结论提示改为区分「启动盘场景 / 对插数据盘场景」。
-  [未执行] HDMI 画面与帧率验收、sway 渲染后端确认、
-           SYSTEM 全量 md5、kernel.img.md5 明文、initramfs 文件级对比、
-           6.18.21 缺陷定位、任何构建脚本修改。
+  [已完成 22:45] HDMI 画面用户目视（有输出、非常卡顿）、4K 输出
+           模式与 DRM 节点、内核模块版本、渲染库映射、EGL 报错、
+           CPU/内存、kernel.img.md5 明文、源码版本定义与 tarball 可得性
+           的只读取证；详见第七节与卡顿归因报告。
+  [未执行] 1080p 运行时对照实验、sway 实际渲染后端日志确认、
+           ES 进程 maps、SYSTEM 全量 md5、initramfs 文件级对比、
+           6.18.21 缺陷定位、任何构建脚本修改、重新构建。
   [不得写] 「已修复」「移植完成」「GPU 栈正常」「前端完全可用」
            「panfrost 已工作」「已定位根因」。
   [可以写] 「系统可运行、前端服务已拉起（sway + essway active）」
@@ -298,4 +319,54 @@ A311D / AURKNIX 2026-11-11 22:23 活体验收报告
     live_acceptance_20261111_2225_part4.txt 补采段（SSH 被重置，未取到）
     bisect_backup_F_20261111/                F 盘原 6.18.21 内核备份 + manifest
   工具报告：python tools/a311d_gpu_stack_check.py --live <gpu probe dump>
+  22:45 补采：live_render_perf_20261111_2240.txt
+              live_renderer_forensics_20261111_2245.txt
+              live_renderer_forensics_20261111_2245_part2.txt（SSH 重置）
+  专项报告：tools/a311d_render_performance_20261111.txt
+
+--------------------------------------------------------------------------------
+七、补记：2026-11-11 22:45 HDMI 卡顿归因（与前文冲突以本节为准）
+--------------------------------------------------------------------------------
+7.1 用户反馈
+  HDMI 画面有输出，但非常卡顿。本项由此前的 [未执行] 变为
+  [实证-用户目视]：画面存在，性能不达标。
+
+7.2 新增实证（详见专项报告第二节）
+  输出：sway 1.11 current_mode 3840x2160@60Hz、scale 1.0；
+        EDID 提供 1920x1080 等低模式，sway config 未固定 mode。
+  渲染节点：/dev/dri 只有 card0 = meson-drm / ff900000.vpu，
+        无 renderD128；card0 只做扫描输出，不提供 3D 渲染。
+  模块：uname 6.18.49、CONFIG_DRM_PANFROST=m，但
+        /lib/modules/6.18.49 空、modprobe -n panfrost FATAL；
+        panfrost.ko / mali_kbase.ko 均在 6.18.21 overlay 目录。
+  渲染路径：sway 映射 libEGL_mesa / libGLESv2 / libgbm /
+        libpixman-1 / memfd:mesa-shared，未映射 panfrost_dri.so；
+        ES journal 有 failed to create dri2 screen 等 EGL 硬件失败。
+  负载：ES 96.6% 单核满载（累计 15:39）、sway 21.6%、
+        6 核全局 idle 76.8%，内存非主因。
+  .md5 明文：b6e2f57e... target/KERNEL（旧 6.18.21），
+        补齐 2.5 (a) 的 P1 缺口。
+  源码：package.mk 6.18.21 由四设备共用，须拆 A311D 单独 case；
+        kernel.org 6.18.49 tarball HTTP 200 可得。
+
+7.3 结论口径
+  引导层 [已通] / 服务层 [已通] / 渲染层 [未通]。
+  卡顿 = 4K 输出（829 万像素/帧）+ 无 GPU 加速的 CPU 合成叠加；
+  根本原因是 KERNEL 6.18.49 与 SYSTEM 模块 6.18.21 版本混刷。
+  wlroots 具体后端、两个因素的权重、同源构建的效果均未验证，
+  仍标 [推断] / [未执行]。
+
+7.4 下一步（不改动设备、不重建）
+  P0 可逆缓解并做单变量对照：
+      SWAYSOCK=/run/0-runtime-dir/sway-ipc.0.sock swaymsg
+      output HDMI-A-1 mode 1920x1080@60Hz（回退 3840x2160@60Hz）。
+  P0 按四节路线一做同源 6.18.49 构建（改动清单见 4.2 / 专项报告）。
+  P1 SSH 22:39 后被设备重置（ping 通、非宕机），补采需等空闲。
+
+7.5 状态
+  [已完成] 卡顿归因取证、报告、文档同步。
+  [未执行] 1080p 对照实验、渲染后端日志确认、任何构建脚本修改、
+           重新构建与板级复验。
+  [不得写] 「已修复」「移植完成」「GPU 栈正常」「前端完全可用」
+           「panfrost 已工作」「卡顿根因已完全定位」。
 ================================================================================
