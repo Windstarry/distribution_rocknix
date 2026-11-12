@@ -1,0 +1,355 @@
+A311D / AURKNIX 20261112 镜像  只读排查报告
+================================================================
+生成时间：2026-11-12（北京时间）
+排查对象：E:\A311d\AURKNIX-image-A311D-20261031\AURKNIX-image-A311D-20261112
+设备对象：192.168.31.7（root / rocknix），A311D，USB 启动
+排查性质：只读。未修改镜像、未修改设备文件、未执行分区/格式化/刷写/重启操作。
+代码基线：本地 HEAD = origin/a311d = 85765b5c6d，工作区干净。
+
+
+第 0 节  设备状态确认（只读采集，均已实测）
+----------------------------------------------------------------
+0.1 连接：SSH 192.168.31.7:22 可达，认证成功。
+
+0.2 系统
+    uname      : Linux A311D 6.18.49 #1 SMP PREEMPT Thu Nov 12 02:04:16 UTC 2026 aarch64
+    OS_VERSION : 20261112
+    BUILD_ID   : 85765b5c6d4e1f095dbf05f45dcfff1f5d7ba208
+                 （与本地 git HEAD 完全一致，设备运行的正是本次最新代码产物）
+    BUILD_DATE : Thu Nov 12 03:27:11 UTC 2026
+    HW_DEVICE  : A311D
+    cmdline    : 含 boot=LABEL=ROCKNIX disk=LABEL=STORAGE；video=HDMI-A-1:D
+
+0.3 引导分区 /flash（vfat，ro，2.0G，已用 70%）
+    SYSTEM 1,482,792,960 B / SYSTEM.md5 / kernel.img 14,106,624 B / kernel.img.md5
+    cfgload 497 B / aml_autoscript 1466 B / dtb.img 54,984 B / config.ini 1195 B
+    device_trees/ / ms_unsupported(0 B) / fs-resize.log 1084 B
+    fs-resize.log 的 mtime 为 2024-06-25 17:37:54，属镜像预置的历史日志，
+    不是本次启动写入；journalctl 中无 fs-resize / installtointernal / parted / mkfs 痕迹。
+
+0.4 磁盘与挂载
+    /dev/sda  33.6GB（VendorCo ProductCode，MBR）
+      P1 0x0c  16.8MB~2164MB   2147MB  vfat  LABEL=ROCKNIX  -> /flash (ro)
+      P2 0x83  2164MB~10.0GB   7836MB  ext4  LABEL=STORAGE  -> /storage (rw)
+      P3 0x07  10.0GB~33.6GB  23.6GB  无 TYPE / 无 LABEL / 未挂载
+      P4 未使用
+    sda3 sysfs：start=19531776，size=46004224 sectors（23,554,162,688 B）
+    sda3 前 64 字节全部为 0xFF，无 exFAT BPB（正常应为 eb7690 + "EXFAT"）。
+    /dev/mmcblk1 存在（14.6GiB 板载），/dev/mmcblk0 不存在。
+    本地 .img 的 MBR 仅 2 个分区：P1 0x0c 2048MiB(start 32768)、P2 0x83 32MiB(start 4227072)。
+    即实机 P2 已由 32MiB 扩到 7836MB，且新增 P3 —— 镜像出厂分区表与实机不一致。
+
+0.5 服务与 GPU（顺带确认，非本次两问题）
+    sway.service / essway.service 均 active running，共 24 个 running units。
+    /dev/dri 存在 card0/card1/card2 与 renderD128/renderD129；
+    lsmod 显示 panfrost 81920 9、drm_shmem_helper；
+    dmesg：panfrost ffe40000.gpu: mali-g52 ... / [drm] Initialized panfrost 1.4.0 ... minor 2。
+    结论：上一轮 handoff 中列为「未验证」的 panfrost 加载与 renderD128 节点，
+    在本次 20261112 镜像上已由板级只读证据确认达成。
+    非阻断提示：dmesg 有 "error -ENODEV: _opp_set_regulators: no regulator (mali) found"。
+
+
+第 1 节  问题一：安装后分区脚本删除 U 盘全部分区，重启无法进系统
+----------------------------------------------------------------
+【1.1 影响范围】
+  - 直接对象：A311D 从 USB 启动的场景。本机启动介质即 /dev/sda（33.6GB U 盘），
+    任何把 /dev/sda 当作「目标盘」的脚本都会直接破坏正在运行的系统盘。
+  - 分区级影响：
+      P1 ROCKNIX(FAT32)：U-Boot cfgload/aml_autoscript、kernel.img、SYSTEM、dtb.img。
+        分区表或 FAT 被清 -> boot=LABEL=ROCKNIX 解析失败 -> 黑屏 / 反复提示
+        "Unable to find LABEL=ROCKNIX" -> 3s 后自动关机。
+      P2 STORAGE(ext4)：/storage 全部用户配置、存档、语言设置、ROM 元数据。
+      P3 GAMES(23.6GB)：游戏数据；当前已处于「无文件系统」状态。
+  - 数据影响：不可逆。P1 可重刷恢复，P2/P3 的用户数据无备份即永久丢失。
+  - 触发条件：只要脚本被执行且目标盘判定为启动盘；与 GPU、内核版本、语言无关。
+  - 当前设备状态：系统仍能正常引导，是唯一完好的基线，尚未被本次故障破坏。
+
+【1.2 涉及的文件或配置项】
+  设备运行时：
+    /usr/lib/rocknix/fs-resize                     首次启动扩容脚本（systemd 静态启用）
+    /usr/lib/systemd/system/fs-resize.service     ExecStart=/usr/lib/rocknix/fs-resize
+    /usr/lib/systemd/system/fs-resize.target
+    /storage/.please_resize_me                   扩容触发标志（当前不存在）
+    /flash/resize_storage_*G                     触发「10G + GAMES」布局的标志文件
+    /flash/fs-resize.log                         扩容日志（当前为 2024 年预置旧文件）
+    /usr/bin/installtointernal                   安卓 UFS 安装脚本，DEVICE=/dev/sda 硬编码
+    /usr/bin/resize                              二进制 resize 工具
+    /storage/.config/modules/MOD_TOOLS/Install AURKNIX to EMMC.sh
+    /etc/installer.conf                          通用 installer 的开关（当前不存在）
+  代码库：
+    projects/ROCKNIX/packages/sysutils/busybox/scripts/fs-resize
+      - package.mk:135 安装到 /usr/lib/rocknix/fs-resize
+      - 第 13 行靠 .please_resize_me 触发；第 30~37 行「已初始化系统」保护分支
+      - 第 85/87 行 parted resizepart 2 TARGET_SIZE|100%
+      - 第 108 行 parted mkpart primary ntfs ${TARGET_SIZE} 100%（写入 0x07）
+      - 第 109 行 mkfs.exfat -n GAMES ${GAME_PART}
+      - 第 95 行 reboot -f（脚本末尾亦有无条件 reboot -f）
+    projects/ROCKNIX/packages/sysutils/busybox/scripts/init:1420
+    projects/ROCKNIX/packages/rocknix/sources/scripts/installtointernal
+      - 第 9~16 行 HW_DEVICE 白名单（仅 SM8250/SM8550/SM8650）
+      - 第 19 行 DEVICE=/dev/sda（硬编码，无启动盘排除）
+      - 第 113 行 parted -s "$DEVICE" rm "$UD_NUM"
+      - 第 116/129/145 行 mkpart；第 121 行 dd if=/dev/zero；第 139/153 行 mkfs
+    projects/ROCKNIX/packages/virtual/emulators/sources/MOD_TOOLS/Install AURKNIX to EMMC.sh
+      - 第 107~108 行 SRC_DISK=/dev/mmcblk1、DST_DISK=/dev/mmcblk0（硬编码）
+      - 第 115 行仅检查两个块设备存在，无平台守卫
+      - 第 144 行 dd if=$SRC_DISK of=$DST_DISK bs=1M count=$DD_COUNT
+      - 第 192 行 dd if=/dev/zero of=$DST_DISK bs=1 seek=462 count=48 conv=notrunc
+        （直接清零 MBR 的 4 条分区表记录 = 删除全部主分区）
+      - 第 201 行 parted mkpart；第 207 行 mkfs.ext4
+    packages/tools/installer/scripts/installer（LibreELEC 通用安装器）
+      - 第 186 行 dd if=/dev/zero of=$INSTALL_DEVICE bs=4096 count=1024
+      - 第 191/193 行 parted mklabel gpt|msdos
+      - 第 81~94 行 get_device_unmount() 试图排除已挂载盘（字符串 sed 删除，非精确匹配）
+    PC 端流程：
+      E:\A311d\...\刷机说明.txt：「第三分区跟 emuelec 系统通用得。用 DG 克隆前两个分区就行」
+      -> 用户侧实际使用 DiskGenius 处理 U 盘分区，存在 clean / 重建分区表的操作面。
+    CI/工具：tools/a311d_games_partition_check.py（只读诊断）、
+             tools/a311d_ci_bootchain_check.py（引导链闸门，当前不覆盖分区脚本安全性）。
+
+【1.3 可能的根因（事实 / 推断分开）】
+  已确认事实：
+    F1 实机 MBR 类型 P1=0x0c、P2=0x83、P3=0x07、P4=0x00；
+       P3 分区条目与 2026-11-09 记录完全同边界（start 19531776 / size 46004224），
+       但前 64 字节全 0xFF；11-09 的 games_partition_check_20261109.json 记录当时
+       P3 有有效 exFAT BPB（eb7690 / EXFAT / 23,554,162,688 B）。
+       => P3 分区条目被保留，文件系统被清空或重建后未完成格式化。
+    F2 本次启动没有执行任何设备端分区脚本：/flash/fs-resize.log 未被写入（mtime
+       2024-06-25）、/storage/.please_resize_me 不存在、journalctl 无相关痕迹。
+       => 当前三分区布局与 P3 的 0xFF 状态，是上电前（PC 刷写/分区阶段）形成的。
+    F3 HW_DEVICE=A311D，installtointernal 的白名单会在第 16 行 exit 1；
+       /dev/mmcblk0 不存在，Install AURKNIX to EMMC.sh 会在第 117 行 exit 1。
+       => 本次启动这两个脚本都不可能执行。
+    F4 镜像内唯一「安装后自动执行」的分区脚本是 fs-resize，其代码只做
+       resizepart 2 与 mkpart 3，没有 mklabel / rm 全部分区的能力。
+
+  推断（按可能性排序，均需下一步取证确认）：
+    R1【最可能】PC 端刷盘/分区流程重建了 MBR。用户在「安装完成」后用 DiskGenius
+       或自建分区脚本处理 U 盘（刷机说明.txt 明确记录 DG 克隆前两分区）。
+       若执行了「删除全部分区 / diskpart clean / 重新建立 MBR」再按原边界重建，
+       P1/P2 内容由镜像克隆恢复、P3 只建了条目未格式化 -> 与 F1 完全吻合；
+       若重建时 P1/P2 未恢复或卷标丢失 -> 重启即 "Unable to find LABEL=ROCKNIX"。
+    R2 用户曾手工触发安装类脚本，且当时条件与本次不同（例如 HW_DEVICE 被改写、
+       插入了第二块 USB 导致 sda/sdb 漂移、或目标 mmcblk0 存在）。
+       installtointernal 的 DEVICE=/dev/sda 与 EMMC 脚本的 seek=462 count=48
+       都具备「删除/重建全部分区表」的破坏力，且都没有启动盘排除校验。
+    R3 fs-resize 在异常条件下误判目标盘或重复执行（可能性较低，代码不删全部分区），
+       但存在两个真实隐患：TARGET_SIZE=100% 会把 P2 扩到盘尾，与既有 P3 冲突；
+       mkfs.exfat 失败不会回滚，日志又预置了「exFAT format complete!」的成功文本，
+       极易误导排查，让人以为 GAMES 分区已格式化。
+
+  共同的设计缺陷（无论 R1/R2/R3 哪个成立都必须修）：
+    所有安装/扩容脚本的目标盘都是硬编码或弱判定，
+    没有「当前启动盘 = /proc/mounts 中 /flash、/storage 所在磁盘」的强制排除；
+    也没有 HW_DEVICE、介质类型、容量、可移动属性的交叉校验。
+    A311D 从 USB 启动时 /dev/sda 恰好就是系统盘，硬编码的风险被放大。
+
+【1.4 建议处理方向（本次不实施）】
+  1. 先固化基线：只读导出 MBR 512B、parted -s -m print、blkid、三分区镜像与 sha256，
+     连同 /flash 全部文件备份；保留 G 盘可回退系统。任何改动前完成。
+  2. 给所有涉及磁盘写操作的脚本加统一守卫函数：
+     从 /proc/mounts 取 /flash 与 /storage 的父磁盘 BOOT_DISK，
+     若 TARGET == BOOT_DISK 立即 abort 并打印明确错误；
+     同时校验 HW_DEVICE 白名单、目标盘为块设备、容量下限、盘序号唯一性。
+  3. 删除硬编码：installtointernal 的 DEVICE=/dev/sda 改为运行时探测 + 白名单；
+     EMMC 脚本的 mmcblk1/mmcblk0 改为按 dtname / 介质类型判定，并禁止对可移动 USB 盘操作；
+     installer 的 get_device_unmount() 由字符串 sed 改为精确列表过滤。
+  4. fs-resize 增加幂等与 dry-run：检测已有第三分区时跳过 mkpart；
+     resizepart 前校验 P2 结束位置 < P3 起始位置；
+     mkfs.exfat 后回读 BPB 校验并把结果写入本次日志（禁止沿用镜像内预置成功日志）；
+     失败时保留分区表不回滚到破坏性状态。
+  5. PC 端流程约束：先整盘写入镜像（含 MBR），再按镜像分区表校验；
+     禁止 clean/删除全部分区；需要 GAMES 分区时只做增量 mkpart + mkfs.exfat；
+     每次操作前后各存一份 MBR 分区表快照。
+  6. CI 闸门补静态检查：脚本中出现 mklabel /dd of=\/dev\//parted -s .* rm
+     时，必须同时存在 BOOT_DISK 排除守卫，否则构建失败。
+
+【1.5 验证要点】
+  - 变更前：dd if=/dev/sda bs=512 count=1 保存 MBR；parted -s -m /dev/sda print；
+    blkid；sha256sum；/flash 全量备份；记录 disk signature（当前 0xbf6fec40）。
+  - 脚本级（离线/非系统盘）：以 --dry-run 或日志确认 TARGET != BOOT_DISK；
+    HW_DEVICE=A311D 时 installtointernal 必须 exit 1；
+    mmcblk0 缺失时 EMMC 脚本必须 exit 1；
+    模拟第二块 USB 插入造成 sda/sdb 漂移，确认守卫仍生效。
+  - 重启后：blkid 三个分区均有正确 TYPE/LABEL；P3 BPB 为 eb7690 + "EXFAT"；
+    mount 含 /flash(ro) 与 /storage(rw)；/proc/cmdline 中 boot/disk LABEL 可解析；
+    systemctl is-active sway essway 为 active；连续冷启动 2 次均能进系统。
+  - 复现实验必须用非系统盘 + 整盘镜像备份，禁止在当前这台唯一完好设备上试。
+
+【1.6 风险提示】
+  ⚠ parted rm / mklabel / dd of=/dev/sdX 不可逆，会同时丢失 P1 引导文件、
+    P2 用户配置与存档、P3 游戏数据；执行前必须整盘备份并逐项确认。
+  ⚠ 当前设备能正常引导，是唯一完好基线；不要在活机上试脚本或改 /flash。
+  ⚠ / 为 squashfs 只读，运行时脚本改不了，必须完整重建 KERNEL/SYSTEM 并重新刷盘。
+  ⚠ /flash 以 ro 挂载且含 2024 年预置 fs-resize.log，不能用该日志判断本次是否扩容。
+  ⚠ 插入第二块 USB 存储会造成 sda/sdb 漂移，硬编码设备名在此场景下尤其危险。
+  ⚠ 修复涉及分区逻辑，回归必须覆盖「两分区镜像」「三分区已扩容盘」「G 盘回退」三种布局。
+
+
+第 2 节  问题二：语言切换选择中文无效，系统仍为英文
+----------------------------------------------------------------
+【2.1 影响范围】
+  - 作用层：EmulationStation 前端界面文案（菜单、设置项、提示），
+    以及由 /usr/bin/es_settings 导出到 systemd 的 LANG / LANGUAGE / LOCPATH 环境变量。
+  - 不作用层：内核/控制台输出、游戏内文字、RetroArch 菜单、终端 locale。
+  - 设备范围：所有使用该构建的设备（默认配置在镜像内）；当前 A311D 实测为中文无效。
+  - 数据影响：无破坏性，仅配置与显示；但切换链路失效会影响所有非英语用户。
+  - 用户可感知表现：UI 选中文后菜单仍英文，或中文显示为方框/空白。
+
+【2.2 涉及的文件或配置项】
+  设备运行时（均已实测）：
+    /storage/.config/system/configs/system.cfg:230  system.language=en_US  <-- 当前实际值
+    /usr/bin/es_settings
+      第 18 行 MYLOCALE=$(get_setting system.language)
+      第 25 行 MYLANG="${MYLOCALE}.UTF-8"
+      第 26 行 MYLOCPATH=/storage/.config/emulationstation
+      第 28~37 行 若缺 LC_NAME 则 localedef -i ${MYLOCALE} -f UTF-8 ...，
+                   输出重定向到 /var/log/start_es.log
+      第 40~44 行 export LOCPATH / LANG / LANGUAGE 并 systemctl import-environment
+    /usr/bin/start_es.sh            先 . es_settings，再启动 emulationstation
+    /usr/lib/systemd/system/essway.service
+      EnvironmentFile=/etc/profile；ExecStart=/usr/bin/start_es.sh；Restart=always
+    /storage/.config/emulationstation/es_settings.cfg
+      内容仅 <?xml...><config><bool name="EnableSounds" value="true" /></config>
+      -> 语言设置不在此文件；grep Language 无命中。
+    符号链接链：
+      /storage/.config/emulationstation/locale -> /usr/share/locale
+      /usr/share/locale -> /storage/.config/locale（位于 rw 的 /storage，非只读）
+    /storage/.config/locale/zh_CN/LC_MESSAGES/emulationstation2.mo  86,871 B（存在）
+      同目录另有 emulationstation2.po 170,671 B、.po~ 170,309 B
+    /usr/share/i18n/locales/zh_CN 存在；/usr/share/i18n/charmaps/UTF-8.gz 存在
+    /usr/share/locale 下含 zh_CN / zh_TW / ja_JP / ko / ru_RU 等 30+ 语言目录
+    /usr/share/themes/es-theme-art-book-next/_inc/lang/zh.xml 存在
+    /storage/.config/emulationstation/resources/DroidSansFallbackFull.ttf 存在（CJK 字体）
+    /usr/share/fonts/TTF 仅有 DejaVuSansMono.ttf（系统级无 CJK 字体）
+    /etc/profile.d/10-locale.conf  仅当 LOCPATH 未设时 export LANG=C.UTF-8
+    实测环境：get_setting system.language = en_US；
+      ES 进程 environ = LANG=en_US.UTF-8、LANGUAGE=en_US.UTF-8、
+      LOCPATH=/storage/.config/emulationstation/locale；
+      locale -a = C / POSIX / en_US.UTF-8（无 zh_CN.UTF-8）；
+      /var/log/start_es.log 不存在；locale.service 单元不存在。
+    ES 二进制内含 system.language / zh_CN / zh_TW / en_US / ja_JP / ko_KR 字符串。
+  代码库：
+    projects/ROCKNIX/packages/rocknix/config/system/configs/system.cfg:189
+      system.language=en_US（全局默认值）
+    projects/ROCKNIX/packages/ui/emulationstation/sources/es_settings（与设备端一致）
+    projects/ROCKNIX/packages/ui/emulationstation/config/common/es_settings.cfg
+      （空 <config></config>，不含语言项）
+    packages/sysutils/busybox/profile.d/10-locale.conf、system.d/locale.service
+      （localedef -i POSIX -f UTF-8 C.UTF-8；该单元在本镜像未启用）
+
+【2.3 可能的根因（事实 / 推断分开）】
+  已确认事实：
+    F1 中文资源齐全：zh_CN 的 .mo/.po、locale 源、charmap、主题 zh.xml、
+       CJK 字体、ES 二进制语言代码均在镜像内。不是「没打包中文语言包」。
+    F2 当前 system.language 仍为 en_US，get_setting 实测返回 en_US，
+       ES 进程 LANG/LANGUAGE 均为 en_US.UTF-8 -> 必然显示英文。
+    F3 es_settings 只在 start_es.sh 启动 ES 时读取一次设置并 export，
+       运行中在 UI 改语言不会即时改变已运行进程的环境变量。
+    F4 /var/log/start_es.log 不存在、locale -a 无 zh_CN.UTF-8、
+       /storage/.config/emulationstation/locale/zh_CN.UTF-8 目录不存在
+       -> zh_CN.UTF-8 这条 locale 从未被 localedef 生成过。
+
+  推断（按可能性排序）：
+    R1【主因，证据最强】UI 里选择「中文」后，设置未写回
+       /storage/.config/system/configs/system.cfg 的 system.language
+       （写入路径、键名、权限或写回时机有问题），或写回后被默认值/首次启动脚本覆盖；
+       也可能写回了但未重启 essway.service，es_settings 未重跑，环境仍是 en_US。
+    R2 即使写为 zh_CN，es_settings 的 localedef 链路尚未被验证：
+       需确认 I18NPATH=/usr/share/i18n、UTF-8.gz、目标目录可写、
+       localedef 成功生成 LC_NAME；任一环节失败，setlocale 会回退到 C/英文。
+       当前日志重定向到 /var/log/start_es.log 且文件缺失，说明这条分支本次未被触发，
+       或输出被清理，缺少可观测性。
+    R3 值映射不一致：UI 若写入 zh-CN / Chinese / zh 等而非 zh_CN，
+       get_setting 取不到有效值，localedef -i <值> 也会失败并静默回退。
+    R4 字体链路独立：系统字体目录无 CJK 字体，仅 ES resources 内有
+       DroidSansFallbackFull.ttf。若主题 zh.xml 未指定或 ES 未选用该字体，
+       中文会渲染成方框/空白，用户可能误判为「切换无效」。
+
+【2.4 建议处理方向（本次不实施）】
+  1. 先做写入链路取证：在 UI 选中文前后 diff
+     /storage/.config/system/configs/system.cfg 与 es_settings.cfg，
+     抓 journalctl -u essway.service 与 ES 日志，确认「到底写没写、写成了什么值」。
+  2. 分两种情况修：
+     未写回 -> 修 ES 设置持久化路径/键名/权限（/storage 为 rw，应可写），
+               并明确 UI 切换后是否需要提示重启 ES 或整机；
+     已写回 zh_CN 但仍英文 -> 查 /var/log/start_es.log、localedef 返回码、
+               LC_NAME 是否生成、LANG 是否经 systemctl import-environment 生效。
+  3. 强化 es_settings：localedef 失败要显式记录并回退到 en_US（而不是静默），
+     生成前校验 .mo 路径 <LOCPATH>/zh_CN/LC_MESSAGES/emulationstation2.mo，
+     生成后校验 LC_NAME；把日志改为追加且保留返回码。
+  4. 默认值策略：谨慎处理 system.language=en_US 全局默认。
+     若要求开机即中文，建议做成设备/区域可配置项或首次启动向导，
+     不要直接全局改（会影响所有设备与所有语言用户），并定义 /storage 配置的迁移策略。
+  5. 字体链路：确认 zh.xml 或 ES 默认字体映射到 DroidSansFallbackFull.ttf；
+     必要时向 /usr/share/fonts 补 CJK 字体并做渲染验证。
+  6. 加只读自检（可并入 CI 或 tools/）：检查 system.language 值、ES 进程 LANG、
+     locale -a、LC_NAME、.mo 存在性、CJK 字体，输出 PASS/FAIL，避免只靠肉眼判断。
+
+【2.5 验证要点】
+  - UI 选中文并重启 ES 后：get_setting system.language = zh_CN；
+    /proc/<es_pid>/environ 中 LANG=zh_CN.UTF-8、LANGUAGE=zh_CN.UTF-8；
+    LOCPATH 指向含 zh_CN/LC_MESSAGES 的目录。
+  - locale -a 含 zh_CN.UTF-8；zh_CN.UTF-8/LC_NAME 非空；
+    /var/log/start_es.log 无 localedef 错误且有明确成功/失败状态。
+  - ES 界面菜单出现中文且字形正常（非方框）；主题 zh.xml 生效。
+  - 反向验证：切回 en_US 能恢复英文，证明是切换链路而非硬编码英文。
+  - 持久化验证：冷启动两次后仍保持中文，确认 /storage 配置未被覆盖。
+  - 附带验证：切换语言不影响 sway/essway active、不影响 /dev/dri 与 panfrost。
+
+【2.6 风险提示】
+  ⚠ system.cfg 位于 /storage（用户数据区），OTA/重刷后可能被保留或覆盖，
+    默认值改动需明确兼容与迁移方式，否则会出现「改了镜像但设备仍是 en_US」。
+  ⚠ es_settings 与 ES 本体在只读 squashfs 内，不能活机直接改，
+    必须完整重建 SYSTEM 并重新刷盘；本次禁止在活机上修改任何文件。
+  ⚠ localedef 在嵌入式 CPU 上耗时明显（脚本内专门调用 performance 提频），
+    首次切换可能卡顿；必须有失败回退，否则可能拖慢甚至阻塞 ES 启动。
+  ⚠ 语言与字体是两条独立链路，只修语言不修字体仍可能「看起来没变」。
+  ⚠ UI 切换可能需要重启 ES/整机才生效，需向使用者说明，避免误判为无效。
+  ⚠ 该问题不影响启动与数据安全，可延后；但因其需重建 SYSTEM，
+    建议与问题一的修复合并为同一次重建，减少刷盘次数与回归成本。
+
+
+第 3 节  优先处理顺序
+----------------------------------------------------------------
+P0  基线固化（最先做，且不改动任何东西）
+    只读备份 MBR/分区表/三分区镜像/sha256、/flash 全量、/storage 关键配置；
+    保留 G 盘可回退系统；记录当前 disk signature 0xbf6fec40 与三分区边界。
+    理由：问题一不可逆，没有备份就没有试错空间。
+
+P0  问题一（分区脚本删除启动盘分区）
+    理由：破坏性、直接导致无法进系统、可造成用户数据永久丢失，优先级最高。
+    顺序：先补「启动盘排除守卫 + 目标盘交叉校验」-> 去除硬编码设备名 ->
+          约束 PC 端刷盘/分区流程 -> fs-resize 幂等与日志修正 -> CI 静态闸门 ->
+          在非系统盘上复现与回归（两种分区布局 + 连续冷启动 2 次）。
+
+P1  问题二（中文切换无效）
+    理由：不影响启动与数据安全，但影响可用性与交付完整度。
+    顺序：先取证「写回与否」-> 修持久化/重启链路 -> 验证 localedef 与 .mo ->
+          验证字体渲染 -> 冷启动持久化回归。
+    注意：与问题一合并为同一次 KERNEL/SYSTEM 重建与刷盘，避免重复刷机。
+
+P2  附带项（不单独安排刷盘，随上述重建一起带入）
+    - P3 当前无 exFAT BPB（前 64B 全 0xFF），需明确是重建 GAMES 还是保留空分区。
+    - /flash/fs-resize.log 为 2024 年预置成功日志，会误导排查，应改为本次生成。
+    - CI 闸门补「磁盘写操作必须有启动盘排除守卫」的静态检查。
+    - 顺带记录：panfrost 与 renderD128 在 20261112 镜像上已板级确认可用，
+      可更新 handoff 中「未验证」口径（本次只读观察，未做任何修改）。
+
+
+第 4 节  本次排查边界与未验证项
+----------------------------------------------------------------
+已执行（全部只读）：
+  - SSH 连接设备、读取系统/服务/分区/挂载/日志/环境变量/脚本源码/MBR 与 P3 引导扇区。
+  - 只读解析本地 20261112 镜像目录、.sha256、a311d-bootchain-check.json、镜像 MBR 分区表。
+  - 只读检索代码库相关脚本、配置、默认值与项目内历史诊断记录。
+未执行（严格遵守用户要求）：
+  - 未修改镜像、未修改设备任何文件、未执行分区/格式化/刷写/重启、未提交 git。
+  - 未修改任何产品代码或配置；本报告为新增独立诊断文档。
+仍需确认（阻塞精确定位，需下一轮授权或用户提供信息）：
+  - 问题一：用户复现故障时所执行脚本的确切名称、来源（设备端还是 PC 端）与运行日志；
+    本次活机无设备端分区脚本执行痕迹，故 R1/R2 尚不能最终定性。
+  - 问题二：UI 选中文后 system.cfg 是否被写入、写入的具体值；
+    需在受控条件下做一次「选择前后 diff + 重启」取证（不改变分区、不刷写）。
+  - 完整重建、刷盘、板级回归均未执行，报告中不含「已修复 / 已验证引导」结论。
+================================================================

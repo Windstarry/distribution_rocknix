@@ -10,6 +10,85 @@ StartProgressLog() {
   StartProgress "$@"
 }
 
+partition_device() {
+  # $1 = disk, $2 = partition number
+  case $1 in
+    /dev/mmcblk*|/dev/nvme*) echo "${1}p${2}" ;;
+    *) echo "${1}${2}" ;;
+  esac
+}
+
+flush_partition() {
+  # Push everything down to the medium and drop the page cache, so the
+  # verification below reads back what the device actually stored instead of
+  # what the kernel still holds in memory.
+  sync
+  blockdev --flushbufs "$1" >>$LOG 2>&1
+  sync
+  echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
+}
+
+games_fs_valid() {
+  # $1 = partition device
+  # Never trust mkfs.exfat's exit code alone: some USB bridges acknowledge
+  # writes and then silently discard them, so the filesystem never reaches
+  # the medium while every command still reports success (A311D + CBM2199,
+  # 2026-11-12). Read the volume boot record back with O_DIRECT and require
+  # both the exFAT OEM signature and blkid's own probe to agree.
+  [ -b "$1" ] || return 1
+  case "$(dd if="$1" bs=1 skip=3 count=8 iflag=direct 2>/dev/null | tr -d '\000')" in
+    EXFAT*) ;;
+    *) return 1 ;;
+  esac
+  blkid -p "$1" 2>/dev/null | grep -q 'TYPE="exfat"'
+}
+
+ensure_games_partition() {
+  # $1 = disk, $2 = partition number, $3 = partition start (e.g. 10G)
+  _disk="$1"
+  _num="$2"
+  _start="$3"
+  _part=$(partition_device "$_disk" "$_num")
+  _try=0
+
+  if games_fs_valid "$_part"; then
+    echo "GAMES: $_part already carries a verified exFAT filesystem, skipping." >>$LOG
+    return 0
+  fi
+
+  if parted -s -m "$_disk" print 2>/dev/null | grep -q "^${_num}:"; then
+    echo "GAMES: partition entry $_num already present on $_disk." >>$LOG
+  else
+    # exFAT has no dedicated MBR partition type; Windows uses 0x07 for it.
+    # parted's "ntfs" fs-type is only a partition-table tag - it does NOT
+    # create an NTFS filesystem. Using "fat32" here writes 0x0c, which makes
+    # Windows mount the exFAT volume with its FAT32 driver and report it as
+    # "damaged / not formatted" (confirmed on A311D, 2026-11-09).
+    StartProgress spinner "Creating GAMES partition..." "parted -s -a optimal -m $_disk mkpart primary ntfs ${_start} 100% >>$LOG 2>&1"
+    sync
+    partprobe "$_disk" >>$LOG 2>&1
+    udevadm settle >>$LOG 2>&1
+    sleep 1
+  fi
+
+  while [ $_try -lt 2 ]; do
+    _try=$((_try + 1))
+    mkfs.exfat -n GAMES "$_part" >>$LOG 2>&1
+    _rc=$?
+    flush_partition "$_part"
+    if [ $_rc -eq 0 ] && games_fs_valid "$_part"; then
+      echo "GAMES: $_part formatted and verified (attempt $_try)." >>$LOG
+      return 0
+    fi
+    echo "GAMES: attempt $_try failed - mkfs rc=$_rc, boot sector read-back did not verify." >>$LOG
+    sleep 2
+  done
+
+  echo "GAMES: $_part could not be formatted and verified. The medium accepts writes" >>$LOG
+  echo "GAMES: but does not store them - replace the USB drive." >>$LOG
+  return 1
+}
+
 if [ -e /storage/.please_resize_me ] ; then
   . /usr/lib/rocknix/functions
 
@@ -23,17 +102,9 @@ if [ -e /storage/.please_resize_me ] ; then
   RESIZE_FILE=$(find /flash -maxdepth 1 -name 'resize_storage_*G')
   if [ -n "$RESIZE_FILE" ]; then
     TARGET_SIZE=$(basename "$RESIZE_FILE" | sed -E 's/^resize_storage_([0-9]+)G$/\1G/')
-  fi
-
-  # this sh** was never intended to be used
-  # on an already installed and running system
-  if [ -d /storage/.kodi -o -d /storage/.config -o -d /storage/.cache ] ; then
-    rm -f /storage/.please_resize_me
-    sync
-    echo "Resizing is not permitted - the system has already been initialised." | tee -a $LOG
-    mount -o remount,ro /flash
-    StartProgress countdown "Rebooting in 5s... " 5 "NOW"
-    reboot -f
+  elif [ -f /flash/.games_pending ]; then
+    # The size intent survives even if resize_storage_* was lost.
+    TARGET_SIZE=$(cat /flash/.games_pending 2>/dev/null)
   fi
 
   # get the disk. /storage on 2nd partition
@@ -50,6 +121,54 @@ if [ -e /storage/.please_resize_me ] ; then
       DISK=$(echo $PART | sed s/[0-9]$//g)
       ;;
   esac
+
+  GAME_PARTNUM=$((PARTNUM + 1))
+
+  # A previous run may have resized STORAGE and created the GAMES partition
+  # entry, but the format never landed on the medium. In that case only the
+  # format step has to be retried: re-running parted/resize2fs would touch
+  # STORAGE again for no reason. The retry is re-armed by keeping
+  # /storage/.please_resize_me, which is what makes init pick fs-resize.target
+  # on the next boot.
+  if [ -n "$TARGET_SIZE" ] && [ -b "$(partition_device "$DISK" "$GAME_PARTNUM")" ]; then
+    echo "GAMES: partition entry already exists - retrying the format only." >>$LOG
+    RETRIES=0
+    [ -f /flash/.games_retry ] && RETRIES=$(cat /flash/.games_retry 2>/dev/null)
+    case $RETRIES in ''|*[!0-9]*) RETRIES=0 ;; esac
+    if [ "$RETRIES" -ge 3 ]; then
+      echo "GAMES: $RETRIES attempts already failed - skipping this boot. Replace the" >>$LOG
+      echo "GAMES: storage medium, then delete /flash/.games_retry to re-arm." >>$LOG
+      mount -o remount,ro /flash
+      exit 0
+    fi
+    if ensure_games_partition "$DISK" "$GAME_PARTNUM" "$TARGET_SIZE"; then
+      parted -s -m $DISK print >>$LOG 2>&1
+      rm -f /flash/resize_storage_*
+      rm -f /flash/.games_retry
+      rm -f /flash/.games_pending
+      rm -f /storage/.please_resize_me
+      sync
+      mount -o remount,ro /flash
+      exit 0
+    fi
+    echo $((RETRIES + 1)) > /flash/.games_retry
+    echo "GAMES: keeping /storage/.please_resize_me so the next boot retries" >>$LOG
+    echo "GAMES: (failed boots so far: $((RETRIES + 1))/3)." >>$LOG
+    sync
+    mount -o remount,ro /flash
+    exit 0
+  fi
+
+  # this sh** was never intended to be used
+  # on an already installed and running system
+  if [ -d /storage/.kodi -o -d /storage/.config -o -d /storage/.cache ] ; then
+    rm -f /storage/.please_resize_me
+    sync
+    echo "Resizing is not permitted - the system has already been initialised." | tee -a $LOG
+    mount -o remount,ro /flash
+    StartProgress countdown "Rebooting in 5s... " 5 "NOW"
+    reboot -f
+  fi
 
   rm -f /storage/.please_resize_me
   sync
@@ -90,26 +209,21 @@ if [ -e /storage/.please_resize_me ] ; then
     StartProgressLog spinner "Checking file system... " "e2fsck -f -p $PART >>$LOG 2>&1"
     StartProgressLog spinner "Resizing file system... " "resize2fs $PART >>$LOG 2>&1"
     if [ -n "$TARGET_SIZE" ]; then
-      # Create GAMES partition in remaining space
-      GAME_PARTNUM=$((PARTNUM + 1))
-      case $PART in
-        "/dev/mmcblk"*|"/dev/nvme"*)
-          GAME_PART="${DISK}p${GAME_PARTNUM}"
-          ;;
-        *)
-          GAME_PART="${DISK}${GAME_PARTNUM}"
-          ;;
-      esac
-      # exFAT has no dedicated MBR partition type; Windows uses 0x07 for it.
-      # parted's "ntfs" fs-type is only a partition-table tag - it does NOT
-      # create an NTFS filesystem. Using "fat32" here writes 0x0c, which makes
-      # Windows mount the exFAT volume with its FAT32 driver and report it as
-      # "damaged / not formatted" (confirmed on A311D, 2026-11-09).
-      StartProgress spinner "Creating GAMES partition..." "parted -s -a optimal -m $DISK mkpart primary ntfs ${TARGET_SIZE} 100% >>$LOG 2>&1"
-      StartProgress spinner "Formatting GAMES partition as EXFAT..." "mkfs.exfat -n GAMES ${GAME_PART} >>$LOG 2>&1"
-      parted -s -m $DISK print >>$LOG 2>&1
-      echo "Created new GAMES partition on ${GAME_PART}" >>$LOG
-      rm -f /flash/resize_storage_*
+      if ensure_games_partition "$DISK" "$GAME_PARTNUM" "$TARGET_SIZE"; then
+        parted -s -m $DISK print >>$LOG 2>&1
+        echo "Created new GAMES partition on $(partition_device "$DISK" "$GAME_PARTNUM")" >>$LOG
+        rm -f /flash/resize_storage_*
+        rm -f /flash/.games_retry
+        rm -f /flash/.games_pending
+      else
+        # Keep the intent and re-arm the trigger. Deleting both markers here is
+        # what turned a failed format into a system that could never repair
+        # itself, because init only runs this script when
+        # /storage/.please_resize_me exists.
+        echo "$TARGET_SIZE" > /flash/.games_pending
+        touch /storage/.please_resize_me
+        echo "GAMES: format failed - markers kept so the next boot retries the format." | tee -a $LOG
+      fi
     fi
     StartProgressLog spinner "Syncing to disk...      " "sync >>$LOG 2>&1"
     StartProgress countdown "Rebooting in 5s...     " 5 "NOW"

@@ -1,0 +1,198 @@
+AURKNIX A311D —— GAMES(P3) 分区无文件系统 只读定位报告
+生成时间：2026-11-12 19:4x（北京时间）
+排查对象：设备 192.168.31.7（AURKNIX，6.18.49，OS 20261112，BUILD_ID 85765b5c6d）
+          电脑端 U 盘：Kingston DataTraveler 3.2 64GB，当前盘符 G: / H:
+排查方式：SSH 只读 + 本机镜像/盘符只读解析（O_DIRECT 复核）
+本次未执行：任何写分区、格式化、刷写、reboot 操作
+
+====================================================================
+一、结论（先看这一节）
+====================================================================
+1) 分区表本身没有问题。P3 的起始扇区、长度、类型全部正确：
+   起始 LBA 19531776（10,000,269,312 B），长度 46004224 扇区（23.55 GB / 21.94 GiB），
+   MBR 类型 0x07。0x07 不是"NTFS 文件系统"，它只是 exFAT 在 MBR 下的惯用类型字节，
+   这与我们在 3f062a4b1e 里修正过的行为一致。
+
+2) 真正缺的是 P3 的 exFAT 卷头（VBR）和 FAT 表：
+   P3 的 0 ~ 7679 扇区（主引导记录区 0~23、FAT 区 2048~7679）全部是 0xFF；
+   而从 8192 扇区（簇堆起点）开始，mkfs.exfat 的产物完整存在：
+     - 8192 扇区：分配位图首字节 1f 00 00 00（簇 2~6 已占用，空卷特征）
+     - 8448 扇区：根目录项 83 05 "G A M E S"（卷标项）+ 81（位图项）+ 82（大写表项）
+   也就是说：格式化确实执行了，但只落地了后半段，卷头没有落地。
+
+3) 因为没有 VBR，任何系统都只能判定"无文件系统"：
+   Linux blkid 只输出 PART_ENTRY_*，没有 TYPE；/storage/games-external 为空，
+   GAMES 不挂载；Windows 侧显示未格式化/无盘符。这与"分区被删"是两回事。
+
+4) 之所以永久无法自愈，是脚本的健壮性缺陷：mkfs.exfat 的返回码没有检查、没有回读校验，
+   失败后仍然删除了 /flash/resize_storage_10G 与 /storage/.please_resize_me，
+   而后续启动又会被 "the system has already been initialised" 拦住，永远不会再补格式化。
+
+====================================================================
+二、现场核对（先说一个与你描述不一致的地方）
+====================================================================
+- 电脑上当前没有 F: 盘。接入的是一块 Kingston DataTraveler 3.2 64GB，
+  两个盘符：G:（P1，卷标 ROCKNIX，FAT32 2GiB）、H:（P3，卷标 GAMES，exFAT 49.28GiB）。
+- 这块盘 P1 的文件集与 20261109 镜像完全一致（SYSTEM 1,482,866,688、
+  kernel.img 14,215,168、kernel2.img 26,826,752、dtb.img 54,984、cfgload 497、
+  aml_autoscript 1466），文件时间为镜像构建时间 2026-11-08 21:06，
+  说明它确实是 20261109 那一版镜像刷出来的盘，可以作对照。
+- 它的 P3 是有效 exFAT（jump eb7690、OEM "EXFAT"、卷长 103,348,224 扇区、
+  part_offset 19531776），但是 MBR 类型是 0x0c（旧脚本用 fat32 标签），
+  所以 Windows 把它当 FAT32 读，健康状态显示"警告"（Warning）。
+- 它的 /fs-resize.log（923 字节）记录了完整成功流程，cluster size=131072，
+  且没有 parted print 段落 —— 说明这是修正 3f062a4b1e 之前的脚本版本。
+
+对比意义：同一套分区+格式化逻辑，在这块 64GB 盘上是能成功的；
+11-12 这次是"分区对了、格式化没落地"，不是分区几何或类型标签的问题。
+
+====================================================================
+三、证据链
+====================================================================
+【E1】镜像本体只有 2 个分区，三分区是首次启动现场创建的
+  20261109 / 20261112 两个 .img（均 2,198,863,872 B）MBR：
+    P1 0x0c start=32768  sectors=4194304 (2.000 GiB)   卷标 ROCKNIX(FAT32)
+    P2 0x83 start=4227072 sectors=65536 (32 MiB, ext4)
+  解析 P1 的 FAT32 根目录，两版镜像都预置了空文件 resize_storage_10G：
+    attr=0x20 size=0 short=RESIZE~1 long='resize_storage_10G'
+  即：10G 分界 + GAMES 分区是设计行为，由 fs-resize 在首次启动时按标记文件执行。
+
+【E2】设备端扩容日志（本次启动生成，1084 B，/flash 时间戳 2024-06-25 是设备无 RTC 的时钟）
+  *** parted -s -f -m /dev/sda resizepart 2 10G          成功
+  *** e2fsck -f -p /dev/sda2                             成功
+  *** resize2fs /dev/sda2                                成功（1913022 个 4K 块 = 7.30 GiB）
+  exfatprogs version : 1.2.9
+  Creating exFAT filesystem(/dev/sda3, cluster size=32768)
+  Writing volume boot record: done / backup volume boot record: done
+  Fat table creation: done / Allocation bitmap creation: done
+  Upcase table creation: done / Writing root directory entry: done
+  Synchronizing... / exFAT format complete!
+  BYT; /dev/sda:33.6GB:scsi:512:512:msdos:VendorCo ProductCode:;
+  1:16.8MB:2164MB:2147MB:fat32::boot, lba;
+  2:2164MB:10.0GB:7836MB:ext4::;
+  3:10.0GB:33.6GB:23.6GB:::;
+  Created new GAMES partition on /dev/sda3
+  每步都报成功，脚本据此删除标记文件并进入 5 秒倒计时 reboot -f。
+
+【E3】设备当前实况
+  parted -s -m /dev/sda unit s print：
+    /dev/sda:65536000s（33.55 GB，msdos，VendorCo ProductCode）
+    1:32768s-4227071s  4194304s fat32  boot,lba
+    2:4227072s-19531250s 15304179s ext4
+    3:19531776s-65535999s 46004224s（无 fs 标记）
+  blkid：/dev/sda3 只有 PARTUUID="bf6fec40-03"，没有 TYPE
+  /proc/mounts：sda3 未挂载；/storage/games-external 为空目录
+  dmesg：无 I/O 错误；sd 0:0:0:0 "Assuming drive cache: write through"，
+          "No Caching mode page found"（内核按写直达处理，不会主动下发 flush）
+
+【E4】P3 介质分布（已用 O_DIRECT 绕过页缓存复核，排除缓存假象）
+  sec+0    ~ sec+7679   全 0xFF   ← 主 VBR、备份 VBR、FAT 全部缺失
+  sec+8192  1f 00 00 00 …          ← 分配位图（空卷）
+  sec+8256  全 00                  ← 位图续
+  sec+8448  83 05 47 00 41 00 4d 00 45 00 53 00 …  ← 根目录：卷标项 "GAMES"
+            81 …（位图项）、82 …（大写表项）
+  sec+8512 起 全 0xFF              ← 未使用簇（正常）
+  说明：mkfs.exfat 的"擦除/写卷头之前"那一段确实落了 FF，
+  后写入的簇堆（位图/大写表/根目录）落盘成功，唯独卷头与 FAT 没有落盘。
+
+【E5】同一个盘、同一套几何，11-09 曾成功
+  11-09 采集：P3 MbrType=7，g_part_head.bin 为有效 exFAT（eb7690/EXFAT/21.94GiB/
+  part_offset=19531776），Windows 侧可识别为 G:。
+  → 说明这块 32GB VendorCo 盘在 10GB 偏移处曾经能正常承载 exFAT。
+
+====================================================================
+四、问题定位（精确到扇区）
+====================================================================
+分区容器：OK（P3 起点/长度/0x07 类型/内核视图一致，无重叠、无越界）
+文件系统：半成品
+  - 缺失：P3 扇区 0（主 VBR）、12（备份 VBR）、2048~7679（FAT）
+  - 存在：8192 起的簇堆（位图、大写表、根目录卷标）
+判定：exFAT 卷不可枚举 → blkid 无 TYPE → 不自动挂载 → Windows 报未格式化
+
+====================================================================
+五、根因分析（分层，按证据强弱）
+====================================================================
+【直接原因】mkfs.exfat 的卷头与 FAT 写入没有落到介质上。
+
+【机制候选，按可能性排序】
+A. U 盘写缓存/FTL 未把卷头写入提交（最可能）
+   内核对该盘 "Assuming drive cache: write through"，不会下发 SYNCHRONIZE CACHE；
+   脚本在 mkfs 之后只有一条 sync，接着 5 秒倒计时就 reboot -f 硬复位，
+   没有 blockdev --flushbufs、没有 unmount/eject、没有回读校验。
+   控制器（CBM2199 类桥接）把最前面的元数据留在自身缓存，复位掉电即丢。
+   已落盘的簇堆（后写）与丢失的卷头（先写）在时间上相邻，符合"缓存只丢一部分"的表现。
+
+B. 该盘（VendorCo ProductCode / 64GB 变体以外的 32GB 廉价盘）在高 LBA 区写入不可靠
+   但这块盘 11-09 曾在该偏移成功格式化，且 P2 ext4 在 6.58 GB 处的备份超级块完好
+   （s_blocks_count=0x001d30be=1913022，与 resize2fs 结果一致），
+   说明高 LBA 写入总体是能落盘的，此假设只能解释"局部扇区"而非整段 3.75 MB。
+   若要坐实，必须做"写入+回读校验"的受控测试（本轮不允许写）。
+
+C. 分区表重读竞态（mkfs 时 /dev/sda3 还是旧节点）
+   本轮证据不支持：偏移一致、heap 落点与 heap_offset=8192 完全吻合、日志无 "No such file"。
+   但脚本确实缺少 partprobe/udevadm settle，属于应当补上的防御。
+
+【放大因素（脚本缺陷，无论 A/B/C 哪个成立都必须修）】
+1. mkfs.exfat 的返回码被 StartProgress 丢弃，失败也继续往下走并打印
+   "Created new GAMES partition on /dev/sda3"。
+2. 没有格式化后的回读校验（读 VBR 前 11 字节是否为 eb 76 90 "EXFAT   "，
+   或 blkid -p 是否识别 TYPE=exfat）。
+3. 失败后仍然 rm -f /flash/resize_storage_*，并已删除 /storage/.please_resize_me，
+   而下一轮启动会被 "Resizing is not permitted - the system has already been
+   initialised." 直接拦住 → 一次失败永久固化，不可能自愈。
+4. 缺少 partprobe / udevadm settle、blockdev --flushbufs、双 sync、eject/延迟断电。
+5. 先扩 P2 到 10G 再 mkfs；mkfs 失败时空间已被占用，用户只剩一个 23.6G 的空壳分区。
+
+====================================================================
+六、影响范围
+====================================================================
+- 功能：GAMES 分区不可用；/storage/games-external 为空；ES 中无法使用该外部游戏区；
+  Windows 侧提示"未格式化/需要修复"。
+- 数据：无用户数据丢失（该分区从未写入过用户数据）。
+- 启动：不影响（P1/P2 完好，系统正常进桌面，GPU/前端均正常）。
+- 风险提示：若在 Windows 里对这个分区直接"格式化"，会把 MBR 类型改成 0x07 或 0x0c
+  的自洽组合，能临时救急，但不是设备端脚本的修复，重刷镜像后问题会复现。
+
+====================================================================
+七、修复建议（按优先级）
+====================================================================
+P0 脚本硬化（projects/ROCKNIX/packages/sysutils/busybox/scripts/fs-resize）
+  a. 捕获 mkfs.exfat 返回码：失败则不删标记、不打印成功、保留 resize_storage_10G 供下次重试。
+  b. mkfs 后 partprobe "$DISK" + udevadm settle，确认 $GAME_PART 节点存在且 size 正确。
+  c. 写入回读校验：dd 读 $GAME_PART 前 512 B，校验 00:03 == eb 76 90 且 03:11 == "EXFAT   "，
+     并用 blkid -p 校验 TYPE=exfat；任一项失败视为失败。
+  d. 落盘：sync; sync; blockdev --flushbufs "$DISK"; 再 sleep/倒计时后 reboot，
+     或改为正常 reboot（非 -f），给 USB 桥接器 flush 的机会。
+  e. 失败回退：mkfs 失败时删除 P3 并把 P2 扩回 100%，避免"7.3G 存储 + 23.6G 空壳"的死局。
+  f. 自愈：若 /flash/resize_storage_* 存在且 P3 无有效 exFAT，允许在已初始化系统上
+     仅做"补格式化"（不重新分区），需要显式开关，避免误扩。
+
+P1 现场恢复（需要写操作，本轮未执行，需你确认）
+  - 方案 1（推荐，最小改动）：在设备上执行 mkfs.exfat -n GAMES /dev/sda3，
+    随后 sync + blockdev --flushbufs，再回读校验 VBR，最后 reboot 验证自动挂载。
+  - 方案 2：把盘接回电脑，用 Windows 格式化该分区为 exFAT（会丢 MBR 类型一致性优势，
+    但可用），或直接用 DG 重新格式化。
+
+P2 流程与闸门
+  - PC 端刷盘流程规范化：刷完不做整盘 clean，只覆盖镜像长度内的扇区。
+  - CI 增加静态闸门：fs-resize 必须包含 mkfs 返回码判断与 VBR 回读校验。
+  - 留档：把本次"半成品格式化"的扇区分布加入 tools/a311d_games_partition_check.py
+    的判定规则（VBR 缺失但簇堆存在 → 明确输出"格式化未落盘"，而不是笼统的"无文件系统"）。
+
+====================================================================
+八、验证要点（修复后按此验收）
+====================================================================
+1. 设备端：blkid -p /dev/sda3 输出 TYPE="exfat"；parted print 第 3 分区仍为 0x07。
+2. 设备端：dd if=/dev/sda3 bs=512 count=1 前 11 字节 eb 76 90 "EXFAT   "。
+3. 设备端：mount | grep games-external 有挂载；ls /storage/games-external 出现目录树。
+4. 电脑端：Windows 识别为 exFAT、卷标 GAMES、无"需要修复"警告。
+5. 连续冷启动 2 次仍保持（验证不是缓存假象）。
+6. 重刷镜像 + 首次启动一次通过（验证 CI 产物不再出现半成品格式化）。
+
+====================================================================
+九、边界说明
+====================================================================
+- 本轮全程只读：未修改镜像、未写设备、未分区、未格式化、未刷写、未重启。
+- 上面所有"成功/失败"的判断均基于现场日志与介质原始字节，不含推测性结论；
+  机制候选 A/B/C 未做定性实验，需一次受控写入测试才能最终确认。
+- 设备仍在正常运行状态，可作为唯一基线，建议先只读备份 P1/P2 与 MBR 再做任何写操作。

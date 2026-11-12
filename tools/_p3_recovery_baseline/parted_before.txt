@@ -1,0 +1,5 @@
+BYT;
+/dev/sda:65536000s:scsi:512:512:msdos:VendorCo ProductCode:;
+1:32768s:4227071s:4194304s:fat32::boot, lba;
+2:4227072s:19531250s:15304179s:ext4::;
+3:19531776s:65535999s:46004224s:::;
