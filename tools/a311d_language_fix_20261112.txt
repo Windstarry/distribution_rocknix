@@ -1,0 +1,108 @@
+A311D / AURKNIX 语言切换修正报告
+日期：2026-11-12
+设备：192.168.31.7（AURKNIX 20261112，内核 6.18.49，BUILD 85765b5c6d）
+范围：默认语言改为中文 + ES 语言菜单真正生效
+状态：源码级修改完成并在实机验证生效链路；重建与刷盘 [未执行]
+
+一、结论摘要
+1. “选中文无效”不是翻译缺失，也不是字体缺失，而是选择结果从未落盘：
+   ES 语言菜单只调用 SystemConf::set()（仅改内存），紧接着触发 exitreboot
+   重启，进程退出后内存变更丢失，系统再次从 system.cfg 读到 en_US。
+2. 一旦 system.cfg 里是 zh_CN，整条链路完全正常：实机切换后界面即为中文，
+   字形正常无方框，已用截图确认。
+3. 已按“构建默认中文 + ES 菜单可切换”落地四处修改，并加固了语言应用脚本的
+   容错（避免导出不存在的 locale 导致静默回退）。
+
+二、根因（证据链）
+1. ES 语言菜单实现（上游 AveyondFly/emulationstation-next master，
+   es-app/src/guis/GuiMenu.cpp openSystemSettings()）：
+     std::string language = SystemConf::getInstance()->get("system.language");
+     if (language.empty()) language = "en_US";
+     ...
+     if (language_choice->changed() &&
+         SystemConf::getInstance()->set("system.language", language_choice->getSelected()))
+     {
+         FileSorts::reset();
+         MetaDataList::initMetadata();
+     #ifdef HAVE_INTL
+         s->setVariable("exitreboot", true);
+     #endif
+         s->setVariable("reloadGuiMenu", true);
+     }
+2. SystemConf::set() 的实现（es-core/src/SystemConf.cpp）只做两件事：
+     confMap[name] = value;  changedConf.insert(name);
+   写盘只发生在 SystemConf::saveSystemConf() 中。语言菜单分支没有调用它，
+   而同文件其它菜单项（键盘布局等）都会显式调用。
+3. 因此流程是：选择中文 -> 内存置 zh_CN -> 标记 exitreboot -> ES 退出重启 ->
+   新进程重新 loadSystemConf() 从磁盘读，仍是 en_US -> 界面回到英文。
+   这与现场三处观测完全一致：
+   - /storage/.config/system/configs/system.cfg 修改时间仍是出厂时间，
+     说明从未被 ES 写过；
+   - es_settings.cfg 里只有 EnableSounds 和 LastSystem（LastSystem 是 ES
+     正常保存的），证明 ES 写文件本身没问题，只是没写语言；
+   - 每次启动 ES 进程环境都是 LANG=LANGUAGE=en_US.UTF-8。
+4. 语言应用链路本身是好的（已实测）：
+   essway.service -> /usr/bin/start_es.sh -> es_settings（读 system.language，
+   生成 locale，export LANG/LANGUAGE/LOCPATH）-> emulationstation
+   （EsLocale::init("", "/usr/share/locale") + bindtextdomain("emulationstation2"））。
+   中文资源齐全：/storage/.config/locale/zh_CN/LC_MESSAGES/emulationstation2.mo
+   为合法 GNU mo（魔数 0x950412de，86,871 B），语言列表含 zh_CN/zh_TW，
+   字体走 :/DroidSansFallbackFull.ttf。
+
+三、修改清单
+1. projects/ROCKNIX/packages/ui/emulationstation/patches/0001-persist-language-setting.patch
+   在 SystemConf::set() 成功后立即调用 saveSystemConf()，保证选择写入
+   system.cfg 后再 exitreboot。补丁已在真实上游文件上 git apply --check 通过，
+   上下文取 4 行、插入 4 行（含注释），对上游改动容忍度较高。
+2. projects/ROCKNIX/packages/rocknix/config/system/configs/system.cfg
+   system.language 由 en_US 改为 zh_CN（构建默认中文）。
+   注意：该默认值只在 /storage 首次生成 system.cfg 时生效，老盘沿用旧值。
+3. projects/ROCKNIX/packages/ui/emulationstation/package.mk
+   在原有 en_US.UTF-8 预生成之后，同样预生成 zh_CN.UTF-8 到
+   usr/config/locale/，使首启无需在设备上跑 localedef（实机实测一次约 9.4 s，
+   RK3326 上更慢），也避免依赖 /storage 可写空间。
+4. projects/ROCKNIX/packages/ui/emulationstation/sources/es_settings
+   - 语言值规范化：zh-CN / zh_CN.UTF-8 / pt_BR@euro 统一成 zh_CN 这类裸码；
+   - 校验 /usr/share/i18n/locales/<code> 是否存在，不存在则回退 en_US 并告警，
+     避免导出无法 setlocale 的 locale 导致 gettext 退回 C locale（表现为
+     “选了没反应”）；
+   - system.cfg 无值时回退读取 es_settings.cfg 的 <string name="Language">，
+     兼容旧构建写入位置；
+   - 就绪判据由 LC_NAME 改为 LC_CTYPE（setlocale 真正依赖的类别），并新增
+     localedef 之后的二次校验与 en_US 兜底。
+
+四、实机验证（192.168.31.7，只改 /storage 配置，可回滚）
+1. 备份：/storage/_lang_backup/{system.cfg.bak,es_settings.cfg.bak}。
+2. 手工等价验证（等价于补丁生效后的结果）：
+   set_setting system.language zh_CN -> 读回 zh_CN（drop_caches 后仍为 zh_CN）；
+   localedef 生成 zh_CN.UTF-8 返回 0，耗时 9.4 s，locale 全量切到 zh_CN.UTF-8；
+   systemctl restart essway 后 ES 进程环境 LANG=LANGUAGE=zh_CN.UTF-8；
+   截图确认界面为中文（底部“菜单/导航栏/随机/选择”），中文无方框、无缺字。
+3. 新版 es_settings 四条分支实测：
+   - zh_CN（locale 已存在）：跳过 localedef，LANG=zh_CN.UTF-8；
+   - zh-CN：规范化为 zh_CN，LANG=zh_CN.UTF-8；
+   - xx_YY：告警 “Unsupported system.language=xx_YY, falling back to en_US”，
+     LANG=en_US.UTF-8；
+   - de_DE：现场生成 de_DE.UTF-8 成功，LANG=de_DE.UTF-8（验证后已删除）。
+4. 设备当前状态：system.language=zh_CN，zh_CN.UTF-8 与 en_US.UTF-8 共存，
+   essway/sway 均 active，ES 运行中。
+5. 静态检查：bash -n 通过；git diff --check 通过。
+
+五、未验证项 / 风险
+1. 补丁的实际效果需要重建 ES 才能上机：ES 由源码编译（PKG_VERSION=master），
+   本轮未执行编译，因此“菜单里选中文后重启仍为中文”这一条是源码级推断 +
+   手工等价验证，不是补丁产物的板级验收。[未执行]
+2. PKG_VERSION 跟随上游 master，补丁有被上游改动打破的可能；若构建时报
+   patch 失败，需按新的上下文重做 hunk（定位串仍是
+   set("system.language", language_choice->getSelected())）。
+3. 新增 zh_CN.UTF-8 约 3.4 MB 未压缩进 SYSTEM（squashfs 压缩后约 1 MB 量级），
+   需要关注镜像体积与首启拷贝时间。
+4. 语言切换仍需要一次 ES 重启（菜单自身会 exitreboot），这是设计行为，不是缺陷。
+5. 系统控制台/TTY 语言不受影响，本修改只覆盖 ES 前端与其子进程环境。
+
+六、后续动作
+1. 重建（Build Docker Image 已在远程就绪）后触发 A311D 出图；
+2. 刷盘后在 ES 菜单里做“中文 -> 英文 -> 中文”往返，确认每次重启后保持，
+   并核对 system.cfg 中 system.language 随选择变化；
+3. 若要覆盖老盘升级场景，可在升级脚本里对 system.language 做一次性迁移，
+   本轮未做。

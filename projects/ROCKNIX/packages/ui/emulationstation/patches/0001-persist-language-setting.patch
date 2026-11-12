@@ -1,0 +1,13 @@
+diff --git a/es-app/src/guis/GuiMenu.cpp b/es-app/src/guis/GuiMenu.cpp
+--- a/es-app/src/guis/GuiMenu.cpp
++++ b/es-app/src/guis/GuiMenu.cpp
+@@ -1962,5 +1962,9 @@ void GuiMenu::openSystemSettings()
+ 	{
+ 		if (language_choice->changed() && SystemConf::getInstance()->set("system.language", language_choice->getSelected()))
+ 		{
++			// SystemConf::set() only updates the in-memory map. Without an explicit
++			// save the new language never reaches system.cfg, and the exitreboot
++			// below discards it, so the UI silently reverts on every boot.
++			SystemConf::getInstance()->saveSystemConf();
+ 			FileSorts::reset();
+ 			MetaDataList::initMetadata();

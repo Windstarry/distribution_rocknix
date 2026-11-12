@@ -15,8 +15,32 @@ echo -n "TIMEZONE=${TZ}" > /storage/.cache/timezone
 echo -n "${TZ}" >/storage/.cache/system_timezone
 systemctl restart tz-data.service
 
+# UI language.
+#
+# system.cfg is authoritative. es_settings.cfg is only consulted when system.cfg
+# has no value, so a language written by a build that still stored it in the ES
+# settings file is not silently ignored.
+ES_CONF="/storage/.config/emulationstation/es_settings.cfg"
 MYLOCALE=$(get_setting system.language)
-if [[ -n "${MYLOCALE}" ]]
+if [ -z "${MYLOCALE}" ] && [ -f "${ES_CONF}" ] ; then
+  MYLOCALE=$(sed -n 's/.*<string name="Language" value="\([^"]*\)".*/\1/p' "${ES_CONF}" | head -n 1)
+fi
+
+# Accept the spellings that have been used over time ("zh-CN", "zh_CN.UTF-8",
+# "pt_BR@euro"): localedef only understands the bare language_COUNTRY token.
+MYLOCALE="${MYLOCALE%%.*}"
+MYLOCALE="${MYLOCALE%%@*}"
+MYLOCALE="${MYLOCALE//-/_}"
+
+# Never export a locale the image cannot generate: setlocale() would fail and
+# gettext would fall back to the C locale, which is what makes a language
+# selection look like it does nothing at all.
+if [ ! -f "/usr/share/i18n/locales/${MYLOCALE}" ] ; then
+  [ -n "${MYLOCALE}" ] && echo "Unsupported system.language=${MYLOCALE}, falling back to en_US" >&2
+  MYLOCALE="en_US"
+fi
+
+if [ -n "${MYLOCALE}" ]
 then
 
   unset I18NPATH LANG LANGUAGE LOCPATH
@@ -25,7 +49,7 @@ then
   MYLANG="${MYLOCALE}.${MYCHARMAP}"
   MYLOCPATH="/storage/.config/emulationstation"
 
-  if [ ! -s "${MYLOCPATH}/locale/${MYLANG}/LC_NAME" ]; then
+  if [ ! -s "${MYLOCPATH}/locale/${MYLANG}/LC_CTYPE" ]; then
     rm -rf "${MYLOCPATH}/locale/${MYLANG}"
     performance
     export I18NPATH="/usr/share/i18n"
@@ -35,6 +59,14 @@ then
               -f "${MYCHARMAP}" \
               "${MYLOCPATH}/locale/${MYLANG}" >/var/log/start_es.log 2>&1
     ${DEVICE_CPU_GOVERNOR}
+  fi
+
+  # localedef can still fail (no space left on /storage, missing i18n data).
+  # Exporting a half written locale is worse than falling back, so verify it.
+  if [ ! -s "${MYLOCPATH}/locale/${MYLANG}/LC_CTYPE" ]; then
+    echo "Unable to generate locale ${MYLANG}, falling back to en_US" >&2
+    MYLOCALE="en_US"
+    MYLANG="en_US.UTF-8"
   fi
 
   export LOCPATH="${MYLOCPATH}/locale"

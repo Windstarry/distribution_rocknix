@@ -57,6 +57,14 @@ makeinstall_target() {
     localedef --force --verbose --inputfile=en_US --charmap=UTF-8 \
     ${INSTALL}/usr/config/locale/en_US.UTF-8 || true
 
+  # Same for Simplified Chinese, which is the default UI language. Generating it
+  # here keeps the first boot short and removes the runtime dependency on
+  # localedef (tens of seconds on RK3326, and it needs writable space on
+  # /storage). es_settings still generates any other language on demand.
+  I18NPATH=$(get_install_dir glibc)/usr/share/i18n/locales/ \
+    localedef --force --verbose --inputfile=zh_CN --charmap=UTF-8 \
+    ${INSTALL}/usr/config/locale/zh_CN.UTF-8 || true
+
   mkdir -p ${INSTALL}/usr/config/emulationstation/resources
   cp -rf ${PKG_BUILD}/resources/* ${INSTALL}/usr/config/emulationstation/resources/
   rm -rf ${INSTALL}/usr/config/emulationstation/resources/logo.png
