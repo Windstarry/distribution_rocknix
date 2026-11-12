@@ -1,0 +1,117 @@
+================================================================================
+A311D / AURKNIX — 输出分辨率改为 1920x1080@60Hz 及「切换后菜单非全屏」排查
+时间：2026-11-12 21:14 ~ 21:24（北京时间 GMT+8）
+设备：192.168.31.7 / root / rocknix，镜像 AURKNIX-A311D.aarch64-20261112.img
+性质：/storage 侧配置变更（可回滚），未改镜像、未改代码
+================================================================================
+
+一、结论摘要
+--------------------------------------------------------------------------------
+1. 分辨率已从 3840x2160@60 改为 1920x1080@60，并已冷启动验证保持。
+   持久化键：system.display_mode_hdmi=1920x1080@60Hz
+   （/storage/.config/system/configs/system.cfg:231）
+
+2. 「切换后菜单界面不是全屏」不是新的显示故障，而是操作顺序问题：
+   运行时用 swaymsg 换模式时，EmulationStation 已经以 3840x2160 完成初始化，
+   SDL2 客户端不会因输出模式变化重新分配缓冲区；sway 侧该节点仍标记
+   fullscreen（fullscreen_mode=1），只是拿旧尺寸的画面铺在新输出上，
+   于是屏幕上只看到原 4K 画面的左上角一块 —— 表现就是「菜单不在全屏、
+   内容被裁切、字号反而变大」。
+   重启前端/整机后，ES 在 1080p 下重新初始化，即恢复正常全屏。
+
+3. 因此：改分辨率必须重启前端（systemctl restart essway）或整机，
+   等价于 ES 菜单里改显示模式后自动重启的行为；只敲 swaymsg 只适合临时试。
+
+二、当前状态（冷启动后实证）
+--------------------------------------------------------------------------------
+输出（sway）
+  current_mode = 1920x1080 @ 60000 mHz（16:9）
+  rect = 0,0 1920x1080；scale=1.0；transform=normal；allow_tearing=true
+ES 窗口
+  app_id=emulationstation，output=HDMI-A-1，fullscreen_mode=1，
+  rect=0,0 1920x1080（与输出一致）
+KMS（/sys/kernel/debug/dri/0/state）
+  crtc[42] meson_crtc：mode "1920x1080": 60 148500 1920 2008 2052 2200
+                        1080 1084 1089 1125 0x40 0x5
+  → 像素时钟 148.5 MHz，标准 1080p60 CEA 时序，非 1366x768
+截图（grim -o HDMI-A-1，1920x1080）：
+  tools/a311d_ui_1080p60_20261112.png        冷启动后 TOOLS 界面，满屏
+  tools/a311d_ui_1080p_commander_20261112.png 切换后文件管理器，满屏可读
+
+三、分辨率是怎么定的（源码级）
+--------------------------------------------------------------------------------
+链路：
+  /storage/.config/system/configs/system.cfg
+      system.display_mode_hdmi=<WxH@RHz>
+      ↓ get_setting（/etc/profile 内 shell 函数）
+  /usr/share/autostart/111-sway-init（每次启动重写 /storage/.config/sway/config）
+      DISPLAY_MODE 为空 → 不写 output mode，交给 DRM 默认（EDID 首选 4K）
+      DISPLAY_MODE 非空 → sed 解析出 width/height/rr，追加
+          output HDMI-A-1 mode <W>x<H>@<R>Hz
+      ↓
+  sway 启动时应用，ES 随后在此时序下初始化
+
+要点：
+  - /storage/.config/sway/config 每次启动被 111-sway-init 覆盖重建，
+    手改该文件只在本次运行有效，不是持久化位置。
+  - 持久化只认 system.cfg 的 system.display_mode_hdmi（HDMI 口优先）；
+    该键不存在时回退 system.display_mode。
+  - /flash/config.ini 里的 vout= 示例是注释状态且 Stage-B 的 cfgload
+    硬编码 bootargs、并不读 config.ini，改它无效。
+  - /proc/cmdline 里仍留着 u-boot 的 vout=1366x768p60hz、hdmimode=1366x768p60hz，
+    那是 Stage-A 引导阶段的初值，与最终 DRM/HDMI 输出无关，不要据此判断当前分辨率。
+  - /sys/class/graphics/fb0/virtual_size 仍是 3840,2160（meson-drm 的
+    drm_fbdev 在启动时按首选模式建一次后不随模式变化重建）。它不是扫描输出路径，
+    判断实际分辨率只看 sway 的 current_mode 或 KMS state 的 crtc mode。
+
+四、执行步骤（已做，全部可回滚）
+--------------------------------------------------------------------------------
+1. 备份：/storage/_lang_backup/system.cfg.bak2（改前）
+2. 运行时试切：swaymsg output HDMI-A-1 mode 1920x1080@60Hz
+   → rect 1920x1080，current_mode 1920x1080@60000
+3. 持久化：set_setting system.display_mode_hdmi "1920x1080@60Hz"
+   → system.cfg:331（重启后 ES 重写文件，键移到 231，值不变）
+4. 同步本次会话的 sway 配置（仅为 reload 场景）：
+   echo "output HDMI-A-1 mode 1920x1080@60Hz" >> /storage/.config/sway/config
+   swaymsg reload → 仍为 1920x1080@60（确认该行与生成行等价、无副作用）
+5. 冷启动：systemctl reboot --no-block，81 s 后 SSH 恢复
+   → 111-sway-init 自动生成 output HDMI-A-1 mode 1920x1080@60Hz
+     （本次落在 /storage/.config/sway/config:5）
+   → ES 在 1080p 下重启，界面满屏
+
+解析逻辑自检（在设备上按 111-sway-init 的同一段 sed 跑一遍）：
+  DM=1920x1080@60Hz → PARSED: w=1920 h=1080 rr=60
+  WOULD-EMIT: output HDMI-A-1 mode 1920x1080@60Hz
+
+五、「非全屏」的判定依据
+--------------------------------------------------------------------------------
+现象期（运行时切换后、重启前）：
+  sway current_mode 已是 1920x1080@60，
+  但 ES 节点仍是 fullscreen 状态、内容按 3840x2160 绘制；
+  grim 抓到的 1920x1080 帧里只有原画面左上部分，底部提示栏整体缺失。
+重启后：
+  ES rect=1920x1080，与 current_mode 一致，界面满屏（截图见第二节）。
+判断方法：看 ES 节点 rect 与输出 current_mode 是否一致；
+不一致即「客户端未重建缓冲区」，重启前端即可，不必怀疑模式本身。
+
+六、回滚方法
+--------------------------------------------------------------------------------
+改回 4K：
+  set_setting system.display_mode_hdmi "3840x2160@60Hz"   （可选）
+  # 或直接删掉该键，交回 EDID 首选模式：
+  sed -i '/^system\.display_mode_hdmi=/d' /storage/.config/system/configs/system.cfg
+然后 systemctl restart essway（或 reboot）。
+临时试：swaymsg output HDMI-A-1 mode 3840x2160@60Hz（不重启前端会出现同样的
+裁切现象，属正常）。
+
+七、遗留与提醒
+--------------------------------------------------------------------------------
+1. 这是配置变更，不是镜像内默认值。重新刷同一镜像仍回 4K@60；
+   若要「构建即 1080p」，需在镜像的默认 system.cfg 或 111-sway-init 里改默认值。
+2. ES 菜单里切换显示模式是否同样生效未单独验证；从代码看走的是同一个
+   system.display_mode_hdmi 键，但需注意它会写 system.cfg 并重启前端。
+3. 本次切换后 EDID 未见重新读取（仍为 FFA SMART TV，首选 4K）；
+   1080p 是从 EDID 已有模式表中选取，不影响兼容性。
+4. fb0 报 4K 属 drm_fbdev 行为，不是故障；若后续有组件按 fb0 取分辨率，
+   需要单独处理（当前 ES/sway 不读它）。
+================================================================================
