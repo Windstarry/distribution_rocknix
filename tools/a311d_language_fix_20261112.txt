@@ -106,3 +106,37 @@ A311D / AURKNIX 语言切换修正报告
    并核对 system.cfg 中 system.language 随选择变化；
 3. 若要覆盖老盘升级场景，可在升级脚本里对 system.language 做一次性迁移，
    本轮未做。
+
+七、补记：2026-11-12 20:44~20:53 换盘后实机切换（新盘 Kingston 64GB）
+-------------------------------------------------------------------------
+背景：新盘刷同一 20261112 镜像（BUILD 85765b5c6d，未含 20280d67de），
+      /storage 为全新生成，system.cfg 第 233 行仍为 system.language=en_US。
+执行（全部在 /storage 侧，可回滚）：
+  1. 备份 /storage/_lang_backup/{system.cfg.bak, es_settings.cfg.bak}
+  2. sed -i 's/^system.language=.*/system.language=zh_CN/'
+     /storage/.config/system/configs/system.cfg  -> 233:system.language=zh_CN
+  3. systemctl restart essway -> es_settings 按未加固版本逻辑执行：
+     MYLOCPATH=/storage/.config/emulationstation
+     localedef -i zh_CN -c -v -f UTF-8 $MYLOCPATH/locale/zh_CN.UTF-8
+     （进程 D 状态约 60~70 s 才结束，比旧盘 9.4 s 明显慢，原因见下）
+     export LANG=LANGUAGE=zh_CN.UTF-8；systemctl import-environment
+  4. 冷启动复核：systemctl reboot --no-block，52 s 后 SSH 恢复
+结果 [实证]：
+  - ES 进程环境：LANG=zh_CN.UTF-8 LANGUAGE=zh_CN.UTF-8
+    LOCPATH=/storage/.config/emulationstation/locale
+  - locale 产物：locale/zh_CN.UTF-8/LC_CTYPE 361,292 B
+  - 重启后 system.cfg 仍为 zh_CN（ES 未回写覆盖）
+  - 界面截图（grim -o HDMI-A-1，1366x768）：
+      tools/a311d_ui_zh_after_restart_20261112.png（重启后）
+      tools/a311d_ui_zh_after_coldboot_20261112.png（冷启动后）
+    两张底部提示均为「菜单 / 导航栏 / 随机 / 选择」，中文无方框、无缺字。
+说明与遗留：
+  1. 冷启动后 es_settings 检测到 LC_NAME 已存在，跳过 localedef，秒级进 ES；
+     只有首次切换需等一次编译。
+  2. 本次 localedef 耗时明显长于旧盘（D 状态 60~70 s），与新盘 exFAT/USB2
+     写入特性有关，不影响结果；若在意首启时延，应靠 package.mk 预生成
+     zh_CN.UTF-8（已在 20280d67de 中实现，尚未进镜像）。
+  3. 本次仍属「改配置」而非「修代码」：新刷盘会回到 en_US；
+     要默认中文必须重建（package 层改动 + ES 补丁）。
+  4. ES 菜单内的语言切换仍需补丁才生效（GuiMenu 只 set 不 save）；
+     本次未验证菜单切换，只验证了配置文件路径。
