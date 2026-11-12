@@ -2,19 +2,25 @@
 A311D / AURKNIX 移植交接文档（当前状态总览）
 ================================================================================
 生成时间：2026-11-11 00:30（北京时间 GMT+8）
-最近更新：2026-11-12 08:45（14.8 补记 CI Docker/apt 失败实证与修正；第十四节为最新状态）
+最近更新：2026-11-12 20:14（新增第十五~十八节：两问题只读排查、GAMES(P3)
+          介质静默丢写定性、语言切换修复；第十八节为全文最新状态）
 文档定位：接手人第一阅读入口。本文自包含，覆盖并取代此前各轮口头结论。
-          第十~十四节按时间顺序保留各轮补记，均为历史时点记录；
-          凡与前文冲突，一律以第十四节 + 第一节「当前状态速览」为准。
-最新状态：源码级已完成「A311D 内核对齐 6.18.49 + 补齐 USB 大容量存储链」，
-          完整 KERNEL/SYSTEM 重建与板级验收尚未执行（14.4）。
+          第十~十八节按时间顺序保留各轮补记，均为历史时点记录；
+          凡与前文冲突，一律以第十八节 + 第一节「1.1a 增量」为准。
+最新状态：11-12 三线收口——①GAMES 分区根因不在脚本而在介质（该 U 盘可写上限
+          < 9.99GB、静默丢写），处置是换盘；②语言「选中文无效」根因是 ES 只
+          set() 未 saveSystemConf()，已补丁 + 构建默认 zh_CN；③fs-resize 已加
+          回读校验与失败重试。三项均只到源码级，重建与刷盘 [未执行]。
 本轮核心文档：
-  变更清单与验证结果  tools/a311d_kernel_alignment_20261111.txt（23:10）
-  卡顿归因            tools/a311d_render_performance_20261111.txt（22:45）
-  活体验收            tools/a311d_live_acceptance_20261111.txt（22:29）
-  实验 A 结果          tools/a311d_experiment_a_result_20261111.txt（22:14）
-  双盘归因诊断        tools/a311d_boot_disk_diagnosis_20261111.txt
-  分区判定工具        tools/a311d_games_partition_check.py（TC-GP-07/08）
+  GAMES(P3) 恢复执行        tools/a311d_p3_recovery_20261112.txt（19:56）
+  GAMES(P3) 只读定位        tools/a311d_p3_games_partition_triage_20261112.txt（19:32）
+  两问题只读排查            tools/a311d_20261112_readonly_triage.txt（19:14）
+  语言切换修正              tools/a311d_language_fix_20261112.txt（20:06）
+  恢复前基线                tools/_p3_recovery_baseline/（MBR + parted）
+  内核对齐 / 卡顿 / 验收    tools/a311d_kernel_alignment_20261111.txt、
+                            tools/a311d_render_performance_20261111.txt、
+                            tools/a311d_live_acceptance_20261111.txt
+  分区判定工具              tools/a311d_games_partition_check.py（TC-GP-07/08）
 历史流水账：tools/a311d_handoff_20261110.txt（1264 行，补记一~十一）
 完整时间线：tools/a311d_port_timeline_20261110.txt（370 行，阶段 A~G；
           阶段 H / I 见本文第三节）
@@ -26,20 +32,25 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
   [推断]   基于实证的工程推论，尚未由板级验证确认
   [未执行] 尚未进行的动作，禁止写成已完成或已通过
 禁止表述：「已修复」「移植完成」「GPU 栈正常」「前端完全可用」
-          「panfrost 已工作」「已定位根因」「卡顿根因已完全定位」
-          「重建完成」「设备已验证引导」「panfrost.ko 已加载」
-          「renderD128 已出现」（14.4 未执行项）。
+          「已定位根因」（问题一的触发路径至今未定性）
+          「卡顿根因已完全定位」「重建完成」「设备已验证引导」
+          「介质问题已修复」「GAMES 已恢复 / 已格式化成功」
+          「中文已修复」（指板级；17.5 未重编译）
+          「panfrost 卡顿已解决」（节点存在不等于流畅度达标）。
 允许表述（须带限定）：「系统可运行」「前端服务已拉起（sway + essway
-          active）」「HDMI 有画面但非常卡顿」——服务层事实见第十二节，
-          渲染层事实见第十三节，均不等于 GPU 栈闭环；
+          active）」「HDMI 有画面」——服务层事实见第十二节；
+          「panfrost 1.4.0 已加载、renderD128/129 已出现」（15.4 板级实证，
+          但不等于帧率/渲染路径达标）；
+          「中文在 20261112 实机生效（手工等价验证）」；
           「内核版本已源码级对齐 6.18.49」「USB 存储链已补齐」
-          仅指仓库源码，不代表已出图或已上电。
+          仅指仓库源码，不代表已出图或已上电；
+          「GAMES 分区根因已定性为介质静默丢写，处置换盘」。
 
 --------------------------------------------------------------------------------
 第一节  一句话结论
 --------------------------------------------------------------------------------
 
-1.1 当前状态速览（2026-11-11 23:15，以第十四节为准）
+1.1 当前状态速览（2026-11-11 23:15 历史快照，状态以 1.1a + 第十八节为准）
 
   引导层  [已通] 实验 A 证明引导链六特征与 CBM2199 盘均不是故障源；
                  活机 dmesg 补齐 usb-storage -> scsi host0 -> sda 全链。
@@ -55,6 +66,20 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
   [未执行] 完整 KERNEL/SYSTEM 重建、刷盘上电、panfrost.ko 加载、
            renderD128、硬件渲染与流畅度板级验收。
   交付性质：源码级根因修复 + 离线实证，不是「重建完成 / 已修复」。
+
+1.1a 2026-11-12 20:14 增量（覆盖 1.1 中对应条目，详见第十五~十八节）
+  渲染层  由「[未通] 无 renderD128」更新为「[部分达成]」：
+          panfrost 1.4.0 已加载、/dev/dri 含 renderD128/renderD129、
+          lsmod panfrost 81920 9 [实证，15.4]；卡顿是否消除 [未验证]。
+  语言层  [已通-实机] 20261112 实机上 system.language=zh_CN 生效、
+          界面中文无方框；根因为 ES 未持久化，补丁 + 默认值已提交，
+          ES 重编译后的板级验收 [未执行]（第十七节）。
+  GAMES   [不可用] 本盘 P3 无法建立文件系统：介质可写上限 < 9.99GB、
+          写入静默丢弃（mkfs rc=0 但 VBR 读回全 0xFF，重启后元数据消失）。
+          处置：换盘 + 全容量写校验；脚本已加回读校验/失败重试 [源码级]。
+  引导层  [未变更] 20261112 镜像可正常进系统；实验 A 结论仍成立。
+  待办    换盘 -> 重建（fs-resize + ES 补丁）-> 刷盘验收 ->
+          启动盘排除守卫与 CI 闸门（18.2 给出串行顺序）。
 
 1.2 历史回归点（保留，供追溯）
   20261109 GOLD 是 make_a311d_bootable.py 在 ROCKNIX-S922X-BOX 引导链上
@@ -116,9 +141,15 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
         （内核本体 + 内建 initramfs 作为整体，尚未再分离）。
         第十节「不能单独归因」的限制至此解除，但不得写「已修复」。
   23:10 补充（第十四节）：根因已进一步细化到 CI 内核配置——A311D
-        linux.aarch64.conf 缺 CONFIG_SCSI / BLK_DEV_SD / USB_STORAGE
+         linux.aarch64.conf 缺 CONFIG_SCSI / BLK_DEV_SD / USB_STORAGE
         整条存储链，导致 USB 能枚举但生成不了 sdX；这不是 6.18.21
         稳定分支的缺陷，也不是盘侧问题。源码已补齐，待重建验证。
+  11-12 20:14 补充（第十六节，本小节最重要的一条）：盘 B 作为整盘已定性为
+        介质故障——可写上限实测 < 9.99 GB，上限以上写入返回成功但静默丢弃
+        （mkfs rc=0、VBR 读回全 0xFF、重启后元数据消失）。
+        因此「盘 B 能引导但不能建 GAMES」这层结论不再适用于盘 B：
+        凡在盘 B 上做的写入实验，其结果一律不可信，需换盘重测。
+        盘 C（Kingston 64GB）不受影响，仍是唯一可回退基线，不要擦除。
 
 2.3 本机关键路径
   仓库：D:\ProgramData\distribution_rocknix      分支：a311d
@@ -556,6 +587,9 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
 --------------------------------------------------------------------------------
 第九节  待办清单（按优先级）
 --------------------------------------------------------------------------------
+
+  ※ 本节为 2026-11-11 23:15 的待办快照。11-12 之后的可执行顺序
+    一律以 18.2 为准（换盘 -> 重建 -> 刷盘验收 -> 启动盘守卫 -> 帧率实测）。
 
   [已完成] 20261111 出图与离线全量核查、刷盘；单变量实验 A（判读 A2）、
        盘侧排除、六特征实机验证；活体系统状态与前端服务验收、
@@ -1097,9 +1131,393 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
       在 workflow 层为 buildx 设 driver-opts network=host；仍不要
       盲目换源或删 dist-upgrade。
 
+--------------------------------------------------------------------------------
+第十五节  补记：2026-11-12 19:14  20261112 镜像两问题只读排查
+--------------------------------------------------------------------------------
+
+15.1 排查边界与设备身份
+  性质：只读。SSH 采集 + 本地镜像/盘符只读解析（O_DIRECT 复核）。
+        未修改镜像、未写设备任何文件、未分区、未格式化、未刷写、未重启、未提交。
+  设备：192.168.31.7:22（root/rocknix）
+        uname  Linux 6.18.49 #1 SMP PREEMPT Thu Nov 12 02:04:16 UTC 2026 aarch64
+        OS_VERSION 20261112
+        BUILD_ID   85765b5c6d4e1f095dbf05f45dcfff1f5d7ba208（与本地 HEAD 一致）
+        HW_DEVICE  A311D
+        cmdline    boot=LABEL=ROCKNIX disk=LABEL=STORAGE；video=HDMI-A-1:D
+  报告：tools/a311d_20261112_readonly_triage.txt（355 行）
+
+15.2 问题一（安装后分区脚本删除整盘分区）定性结果
+  已确认事实 [实证]：
+    F1 实机 MBR：P1 0x0c / P2 0x83 / P3 0x07 / P4 空；P3 条目与 11-09 记录
+       同边界（start 19531776、size 46004224），但前 64 B 全 0xFF。
+       => 分区条目保留、文件系统缺失，不是「分区被删」。
+    F2 本次启动没有执行任何设备端分区脚本：/flash/fs-resize.log 未被写入
+       （mtime 2024-06-25 17:37:54，为镜像预置历史日志）、
+       /storage/.please_resize_me 不存在、journalctl 无 fs-resize /
+       installtointernal / parted / mkfs 痕迹。
+       => 三分区布局与 P3 的 0xFF 状态是上电前形成的（PC 端刷写/分区阶段）。
+       注：第 16.2 节引用过同一份 1084 B 日志并判为「本次启动生成」，该判断
+       在本轮被 F2 推翻，以本处为准。
+    F3 HW_DEVICE=A311D 时 installtointernal 第 16 行即 exit 1；
+       /dev/mmcblk0 不存在，Install AURKNIX to EMMC.sh 第 117 行即 exit 1。
+       => 本次启动这两个脚本都不可能执行。
+    F4 镜像内唯一「安装后自动执行」的分区脚本是 fs-resize，代码只做
+       resizepart 2 与 mkpart 3，没有 mklabel / 批量 rm 能力。
+  推断（未定性，按可能性排序）[推断]：
+    R1【最可能】PC 端刷盘/分区流程重建了 MBR：P1/P2 由镜像克隆恢复，
+       P3 只建条目未格式化。与 F1 完全吻合。
+    R2 曾手工触发安装类脚本，且当时条件不同（HW_DEVICE 被改写、插入第二块
+       USB 致 sda/sdb 漂移、或 mmcblk0 存在）。
+    R3 fs-resize 在异常条件下误判目标盘（可能性低，代码不删全部分区），
+       但确有两个隐患：TARGET_SIZE=100% 会把 P2 扩到盘尾与 P3 冲突；
+       mkfs 失败不回滚。
+  破坏力来源 [实证-代码]：
+    installtointernal        第 19 行 DEVICE=/dev/sda 硬编码
+    Install AURKNIX to EMMC.sh 第 192 行 seek=462 count=48 清 MBR
+    两者均无「目标盘 = 当前启动盘」排除校验；A311D 从 USB 启动时
+    /dev/sda 恰是系统盘，硬编码风险被放大。
+  共同设计缺陷（无论 R1/R2/R3 哪个成立都必须修）：
+    所有写盘脚本的目标盘硬编码或弱判定，缺少
+    「BOOT_DISK（取自 /proc/mounts 中 /flash、/storage 的父盘）强制排除」，
+    也缺少 HW_DEVICE / 介质类型 / 容量 / 可移动属性交叉校验。
+  结论口径：破坏力来源已枚举到行号，触发路径未最终定性；
+            不得写「已定位根因」，也不得写「已修复」。
+
+15.3 问题二（语言）初步定位
+  只读证据指向「选择结果未落盘」，设备侧证据链与源码定位见第十七节。
+
+15.4 口径更新：panfrost / renderD128 已在 20261112 板上达成 [实证]
+  /dev/dri 存在 card0/card1/card2 与 renderD128/renderD129；
+  lsmod：panfrost 81920 9、drm_shmem_helper；
+  dmesg：panfrost ffe40000.gpu: mali-g52 ... [drm] Initialized panfrost 1.4.0
+         ... minor 2。
+  => 覆盖 1.1「渲染层 [未通] / /dev/dri 仅 card0、无 renderD128」与
+     14.4 中「panfrost.ko 已加载 / renderD128 已出现」两项未执行项。
+  限定：这只解除「驱动与节点缺失」，不等于「卡顿已解决」。
+        第十三节 13.3 的「3840x2160@60Hz + CPU 合成」仍是待验证假设，
+        本轮未测帧率、未测渲染路径，不得写成「GPU 栈正常」。
+  非阻断提示：dmesg 有 "error -ENODEV: _opp_set_regulators:
+        no regulator (mali) found"，不影响 panfrost 初始化。
+
+15.5 本轮未闭环
+  [未定性] 问题一的现场触发路径（需要用户提供当时执行的脚本名与日志）
+  [未执行] 启动盘排除守卫（installtointernal / EMMC 脚本）—— 仅有 fs-resize 硬化
+  [未执行] 完整重建、刷盘、板级回归
+
+--------------------------------------------------------------------------------
+第十六节  补记：2026-11-12 19:32~19:56  GAMES(P3) 从「半成品格式化」
+          到「介质静默丢写」（本轮最重要的结论变更）
+--------------------------------------------------------------------------------
+
+16.1 现场核对：用户描述与实物不一致之处
+  - 电脑上当时没有 F: 盘。接入的是 Kingston DataTraveler 3.2 64GB，
+    两个盘符：G: = P1（卷标 ROCKNIX，FAT32 2GiB）、H: = P3（卷标 GAMES，
+    exFAT 49.28GiB）。
+  - 该盘 P1 文件集与 20261109 镜像完全一致（SYSTEM 1,482,866,688、
+    kernel.img 14,215,168、kernel2.img 26,826,752、dtb.img 54,984、
+    cfgload 497、aml_autoscript 1466，时间均为 2026-11-08 21:06），
+    确认是 20261109 镜像刷出的对照盘，可作回退基线。
+  - 它的 P3 是有效 exFAT（jump eb7690、OEM "EXFAT"、卷长 103,348,224 扇区、
+    part_offset 19531776），但 MBR 类型是 0x0c（旧脚本按 fat32 打标签），
+    Windows 因此按 FAT32 解读并报「警告」。
+  - 它的 /flash/fs-resize.log（923 B）记录了完整成功流程
+    （cluster size=131072），且没有 parted print 段落
+    => 属修正 3f062a4b1e 之前的脚本版本。
+  对比意义：同一套「分区 + 格式化」逻辑在 64GB 正品盘上能成功；
+            11-12 这次是「分区对了、格式化没落地」，不是几何或类型标签问题。
+
+16.2 P3 精确定位（只读，精确到扇区）
+  分区容器 OK：start 19531776（10,000,269,312 B）、长度 46004224 扇区
+  （23.55 GB / 21.94 GiB）、MBR 类型 0x07，与 11-09 记录同边界。
+  0x07 不是「NTFS 文件系统」，只是 exFAT 在 MBR 下的惯用类型字节。
+  介质分布（O_DIRECT 复核，排除页缓存假象）：
+    sec+0 ~ sec+7679   全 0xFF     <- 主 VBR(0)、备份 VBR(12)、FAT(2048~7679) 全缺
+    sec+8192           1f 00 00 00 <- 分配位图（空卷特征）
+    sec+8448           83 05 "G A M E S" + 81(位图项) + 82(大写表项) <- 根目录
+    sec+8512 起        全 0xFF     <- 未使用簇（正常）
+  判定：exFAT 半成品 —— 卷头与 FAT 缺失、簇堆存在 -> blkid 无 TYPE ->
+        不自动挂载 -> Windows 报「未格式化/需要修复」。
+  脚本侧致命放大（这是「永久无法自愈」的真正原因）：
+    1) mkfs.exfat 的返回码被 StartProgress 丢弃，失败仍打印
+       "Created new GAMES partition on /dev/sda3"；
+    2) 无格式化后回读校验；
+    3) 失败后仍 rm -f /flash/resize_storage_*，且 /storage/.please_resize_me
+       已被删除，下一轮启动被
+       "Resizing is not permitted - the system has already been initialised."
+       拦住 -> 一次失败永久固化；
+    4) 缺 partprobe / udevadm settle / blockdev --flushbufs / 双 sync；
+    5) 先扩 P2 到 10G 再 mkfs，mkfs 失败时空间已占用，只剩 23.6G 空壳分区。
+
+16.3 最小恢复执行（用户批准后，19:45~19:56 在设备上实做）
+  写前基线 [已留档]：
+    MBR 512 B -> tools/_p3_recovery_baseline/sda_mbr_before_20261112_194506.bin
+                 sha256 前 16 位 8c11dd1754590105
+    parted -s -m print -> tools/_p3_recovery_baseline/parted_before.txt
+    disk signature 0xbf6fec40（PARTUUID bf6fec40-03）
+  执行链与结果 [实证]：
+    mkfs.exfat -n GAMES /dev/sda3            rc=0，"exFAT format complete!"
+    sync -> blockdev --flushbufs（sda3 与 sda）-> drop_caches
+    dd if=/dev/sda3 bs=512 count=1 iflag=direct
+      -> 全 0xFF，无 eb7690 / "EXFAT" 魔数
+    blkid -p /dev/sda3 -> 仅 PART_ENTRY_*，无 TYPE
+    备份 VBR（sec 12）-> 全 0xFF；整盘偏移 19531776 直读 -> 同样全 0xFF
+      （排除分区节点偏移错位）
+  受控写入实验（P3 内，分区为空、无用户数据）：
+    LBA 0 / 12 / 2048 / 8192 / 8448 / 40000000 -> dd 全部 rc=0
+    回读（O_DIRECT）-> 全部 0xFF 或仍是旧内容（8192 = 1f 00 00 …）
+    Dirty / Writeback 均 0 kB；写入后立即用非 O_DIRECT 读仍 0xFF
+      => 数据连页缓存都没进，是被设备「收下即丢」，不是缓存假象。
+  边界扫描（分区内 12 点：0 / 16 / 1024 / 4096 / 8192 / 16384 / 65536 /
+    262144 / 1048576 / 4194304 / 16777216 / 44000000）：
+    全部写入成功、全部读回 0xFF 或旧值，无一落盘。
+  分区表外空隙探测（排除「分区边界」与「LBA 边界」两种解释）：
+    LBA 19531251 / 19531300 / 19531500 / 19531700 / 19531775 /
+        19531776 / 19531800 / 19532288 -> 全 0xFF
+    10GB 以下：19520000 / 19531000 / 19531240 -> 同样 0xFF
+    => 失效边界与 P3 起点无关，位于 < 9.99GB；P3 全段失效。
+  对照实验（证明链路与文件系统层正常）：
+    /storage（P2 ext4）写 4 MiB + fsync -> drop_caches -> md5 一致
+    （b5cfa9d6c8febd618f91ac2843d50a1c）
+    => 同一 USB 链路、同一内核，P2 区间持久正常。
+    注：文件级 seek 只改文件偏移，ext4 块分配由分配器决定，
+        不能用来证明对应物理 LBA 可写，故不作高 LBA 证据。
+  重启后复测（关键）：
+    reboot -f 重连后，P3 sec 0 / 8192 / 8448 全部 0xFF。
+    => 上一轮「读到的 exFAT 位图与 GAMES 根目录」只存在于控制器缓存，
+       掉电即失、从未落到闪存。
+    重启后重写 0 / 2048 / 8192 / 40000000 -> 仍全部丢弃。
+
+16.4 判定：介质静默丢写，必须换盘
+  项目            观察                                        判定
+  写入返回码      dd rc=0、mkfs rc=0                          设备虚报成功
+  页缓存          Dirty=0，非 O_DIRECT 立即读仍 0xFF          不是缓存假象
+  VBR 魔数        sec0 偏移 3 无 "EXFAT"                       格式化未落地
+  备用 VBR        sec12 无魔数                                  同上
+  分区表          parted / sysfs 起点长度均正确                 分区表无关
+  mkfs 工具       loop 设备上同版本格式化成功且校验通过          工具无关
+  文件系统层      P2 ext4 写入 + drop_caches 校验一致           链路无关
+  重启后          「已写入」的元数据消失                        控制器缓存幻觉
+  可写范围        ≤9.99GB 内已有失效点，P3 全段失效             介质容量/写入故障
+  结论：该盘在可写上限以上静默丢写（返回成功但不落盘）。
+        不是脚本、分区表、mkfs 工具或内核问题；
+        换任何脚本或镜像都无法在本盘 P3 建立可挂载文件系统。
+        「最小恢复」在本盘上不可能完成。
+  介质档案（换盘核对用）：
+    USB ID 048d:1234（CBM2199 类桥接）  序列号 7419751033367614176
+    产品串 "Disk 2.0" / 厂商串 "USB"   parted 型号 VendorCo ProductCode
+    容量 65536000 扇区 = 33.6 GB（标称 32 GB 级）
+    枚举 经 05e3:0610 hub，high-speed（USB2.0 480 Mbps）
+    实测写速 1.2 ~ 2.9 MB/s   可写上限 实测 < 9.99 GB
+  风险：该盘对上限以上的写入无任何错误提示；若曾写入数据则不可恢复。
+        /storage 当前仅用 502.5 MB（位于盘前段），短期可用，
+        但不建议在其上保存重要数据。
+
+16.5 对前序报告的口径修正（务必遵守，防止接手人误信）
+  1. 「11-09 曾在同偏移成功格式化」不能继续引用：重启后残留 exFAT 元数据
+     消失，证明那只是控制器缓存；11-09 的成功记录需换盘后重测。
+  2. 16.2 的「簇堆（位图/大写表/根目录）已落盘」结论作废，原因同上。
+     正确表述：当时读到的簇堆内容来自控制器缓存，掉电即失。
+  3. fs-resize.log 里的 "exFAT format complete!" 是脚本捕获的 stdout，
+     不等于数据已落盘；/flash 另有一份 2024 年预置日志（见 F2），
+     两者都不能作为「格式化成功」的证据。
+  4. 改动行数以 git numstat 为准：fs-resize +145 / −31
+     （恢复报告写作 +147 / −33，属统计口径差异，不是内容差异）。
+
+16.6 脚本硬化（已落地，源码级）
+  文件：projects/ROCKNIX/packages/sysutils/busybox/scripts/fs-resize
+  1. partition_device()      mmcblk/nvme 用 pN，其余用 N，去掉两处重复拼装
+  2. flush_partition()       sync -> blockdev --flushbufs -> sync -> drop_caches
+  3. games_fs_valid()        O_DIRECT 读分区第 0 扇区偏移 3 的 8 字节，
+                             要求 "EXFAT"，且 blkid -p 报 TYPE="exfat"，
+                             两者同时成立才算有效（本次问题的直接检测手段）
+  4. ensure_games_partition() 有效则幂等跳过；条目已存在则不再 mkpart；
+                             mkpart 后补 partprobe + udevadm settle + sleep 1；
+                             捕获 mkfs 返回码，失败最多重试 2 次，每次重试后回读
+  5. 失败不再删标记            写 /flash/.games_pending；重新 touch
+                             /storage/.please_resize_me
+                             （init 第 1420 行只在该文件存在时启 fs-resize.target，
+                              删掉等于永久放弃自愈）
+  6. 重试上限 3 次             计数在 /flash/.games_retry，达上限只记录并跳过本次
+                             启动，避免坏介质上每次开机长时间格式化；
+                             标记保留，可人工重置
+  7. 只有校验通过才删除 resize_storage_* / .games_pending / .games_retry /
+     .please_resize_me
+
+16.7 验证结果
+  静态：bash -n / sh -n 通过；git diff --check 通过；
+        tools/a311d_ci_bootchain_check.py --repo . -> 24 PASS / 0 FAIL / 1 WARN / 1 INFO
+  实机负例（当前这块坏盘，真实 /dev/sda3）：
+        调 ensure_games_partition /dev/sda 3 10G ->
+        检测到条目已存在 -> mkfs 两次均 rc=0 但回读校验失败 ->
+        日志写明 "attempt N failed - mkfs rc=0, boot sector read-back did
+        not verify" -> 返回 1，且未删除任何标记。
+        证明：同类问题再现时会被识别并保留重试入口，而不是静默固化。
+  实机正例（loop 设备 + 真实 mkfs.exfat，128 MiB）：
+        未格式化 -> games_fs_valid=1；mkfs.exfat rc=0 -> valid=0。
+        证明：有效文件系统不会被误判，不会每次启动重格式化。
+
+16.8 未执行 / 未验证
+  [未执行] 在 P3 建立可挂载文件系统（介质拒绝落盘，物理上不可完成）
+  [未执行] 重启后 GAMES 自动挂载验收（无文件系统可挂）
+  [未执行] 完整 KERNEL/SYSTEM 重建与刷盘（脚本改动需重建才进镜像）
+  [未验证] 更换介质后 10G + GAMES 布局的端到端恢复
+
+16.9 提交
+  0c4f99c4f0（2026-11-12 19:53）已推 origin/a311d，含：
+    fs-resize（+145/−31）、tools/_p3_recovery_baseline/（MBR + parted）、
+    tools/a311d_20261112_readonly_triage.txt、
+    tools/a311d_p3_games_partition_triage_20261112.txt、
+    tools/a311d_p3_recovery_20261112.txt
+
+--------------------------------------------------------------------------------
+第十七节  补记：2026-11-12 20:06  语言切换根因与修复（默认中文 + ES 可切换）
+--------------------------------------------------------------------------------
+
+17.1 根因：选择结果从未落盘
+  上游 AveyondFly/emulationstation-next master，es-app/src/guis/GuiMenu.cpp
+  openSystemSettings() 语言分支：
+      if (language_choice->changed() &&
+          SystemConf::getInstance()->set("system.language",
+                                          language_choice->getSelected()))
+      {
+          FileSorts::reset(); MetaDataList::initMetadata();
+      #ifdef HAVE_INTL
+          s->setVariable("exitreboot", true);
+      #endif
+          s->setVariable("reloadGuiMenu", true);
+      }
+  SystemConf::set()（es-core/src/SystemConf.cpp）只做
+      confMap[name] = value; changedConf.insert(name);
+  写盘只发生在 SystemConf::saveSystemConf()，而语言分支没有调用它
+  （同文件键盘布局等其它菜单项都显式调用了）。
+  于是：选中文 -> 内存置 zh_CN -> 标记 exitreboot -> ES 退出重启 ->
+  新进程 loadSystemConf() 从磁盘读回 en_US -> 界面回到英文。
+  现场三处观测与此完全一致：
+    - /storage/.config/system/configs/system.cfg 修改时间仍是出厂时间；
+    - es_settings.cfg 里只有 EnableSounds 与 LastSystem
+      （LastSystem 是 ES 正常写入的），证明 ES 写文件本身没问题；
+    - 每次启动 ES 进程环境都是 LANG=LANGUAGE=en_US.UTF-8。
+
+17.2 语言链路与资源本身是好的（已实测）
+  essway.service -> /usr/bin/start_es.sh -> es_settings
+  （读 system.language -> 生成 locale -> export LANG/LANGUAGE/LOCPATH）
+  -> emulationstation（EsLocale::init("", "/usr/share/locale") +
+  bindtextdomain("emulationstation2")）。
+  中文资源齐全：/storage/.config/locale/zh_CN/LC_MESSAGES/emulationstation2.mo
+  为合法 GNU mo（魔数 0x950412de，86,871 B），语言列表含 zh_CN/zh_TW，
+  字体走 :/DroidSansFallbackFull.ttf。
+  即：不是翻译缺失、不是字体缺失，只是选择没落盘。
+
+17.3 修改清单（四处，源码级）
+  1. packages/ui/emulationstation/patches/0001-persist-language-setting.patch
+     （新增 13 行）在 set() 成功后立即 saveSystemConf()，再 exitreboot。
+     上下文仅 5 行、插入 4 行（含三行注释），抗上游偏移；
+     已在真实上游文件副本上 git apply --check 通过（纯 LF）。
+  2. packages/rocknix/config/system/configs/system.cfg
+     system.language: en_US -> zh_CN（构建默认中文）。
+     限定：该默认值只在 /storage 首次生成 system.cfg 时生效，老盘沿用旧值。
+  3. packages/ui/emulationstation/package.mk（+8 行）
+     在原有 en_US.UTF-8 预生成之后同样预生成 zh_CN.UTF-8 到 usr/config/locale/，
+     首启无需在设备上跑 localedef（实机实测一次约 9.4 s，RK3326 更慢），
+     也不依赖 /storage 可写空间。
+  4. packages/ui/emulationstation/sources/es_settings（+34/−2）
+     - 语言值规范化：zh-CN / zh_CN.UTF-8 / pt_BR@euro -> zh_CN 这类裸码；
+     - 校验 /usr/share/i18n/locales/<code> 存在，不存在回退 en_US 并告警，
+       避免导出无法 setlocale 的 locale 导致 gettext 退回 C locale
+       （表现就是「选了没反应」）；
+     - system.cfg 无值时回退读 es_settings.cfg 的 <string name="Language">；
+     - 就绪判据由 LC_NAME 改为 LC_CTYPE（setlocale 真正依赖的类别），
+       并新增 localedef 之后的二次校验与 en_US 兜底。
+
+17.4 实机验证（192.168.31.7，只改 /storage 配置，可回滚）
+  备份：/storage/_lang_backup/{system.cfg.bak, es_settings.cfg.bak}
+  手工等价验证（等价于补丁生效后的结果）：
+    set_setting system.language zh_CN -> 读回 zh_CN（drop_caches 后仍为 zh_CN）；
+    localedef 生成 zh_CN.UTF-8 rc=0，耗时 9.4 s，locale 全量切到 zh_CN.UTF-8；
+    systemctl restart essway -> ES 进程环境 LANG=LANGUAGE=zh_CN.UTF-8；
+    截图确认界面为中文（底部「菜单/导航栏/随机/选择」），无方框、无缺字。
+  新版 es_settings 四分支实测：
+    zh_CN（locale 已存在）-> 跳过 localedef，LANG=zh_CN.UTF-8
+    zh-CN                -> 规范化为 zh_CN，LANG=zh_CN.UTF-8
+    xx_YY                -> 告警 "Unsupported system.language=xx_YY,
+                             falling back to en_US"，LANG=en_US.UTF-8
+    de_DE                -> 现场生成成功，LANG=de_DE.UTF-8（验后已删）
+  设备现状：system.language=zh_CN，zh_CN.UTF-8 与 en_US.UTF-8 共存，
+            essway / sway 均 active，ES 运行中（中文界面）。
+  静态：bash -n 通过；git diff --check 通过。
+
+17.5 未验证项 / 风险
+  [未执行] ES 未重编译：「菜单里选中文后重启仍为中文」是源码级推断 +
+           手工等价验证，不是补丁产物的板级验收。
+  [风险] PKG_VERSION 跟随上游 master，补丁可能被上游改动打破；
+         若构建报 patch 失败，按新上下文重做 hunk
+         （定位串仍是 set("system.language", language_choice->getSelected())）。
+  [风险] 新增 zh_CN.UTF-8 约 3.4 MB 未压缩进 SYSTEM
+         （squashfs 压缩后约 1 MB 量级），关注镜像体积与首启拷贝时间。
+  [说明] 语言切换仍需一次 ES 重启（菜单自身 exitreboot），是设计行为。
+  [范围] 只覆盖 ES 前端与其子进程环境，不影响系统控制台/TTY 语言。
+  [未做] 老盘升级场景下 system.language 的一次性迁移。
+
+17.6 提交
+  20280d67de（2026-11-12 20:06）已推 origin/a311d，含：
+    system.cfg、package.mk、0001-persist-language-setting.patch、es_settings、
+    tools/a311d_language_fix_20261112.txt
+
+--------------------------------------------------------------------------------
+第十八节  2026-11-12 20:14 收口：状态矩阵、下一步与禁止表述
+--------------------------------------------------------------------------------
+
+18.1 状态矩阵（本节为全文最新状态，覆盖 1.1 与第十四节）
+  引导层  [已通] 实验 A 结论不变；20261112 镜像可正常进系统。
+  系统层  [已通] 192.168.31.7 正常运行，三分区中 P1/P2 挂载正常。
+  服务层  [已通] sway / essway active+running（24 个 running units）。
+  渲染层  [部分达成] panfrost 1.4.0 已加载、renderD128/129 已出现 [实证]；
+          卡顿是否消除 [未验证]（未测帧率、未测渲染路径）。
+  语言层  [已通-实机] system.language=zh_CN 生效、界面中文无方框 [实证]；
+          ES 菜单持久化 [源码级]，需重建后板级验收 [未执行]。
+  GAMES   [不可用] 介质静默丢写（可写上限 < 9.99 GB），本盘无法建立文件系统；
+          脚本硬化 [已完成-源码级] 并实机正/负例通过。
+  脚本守卫 [部分] fs-resize 已硬化；installtointernal 与 EMMC 脚本的
+          启动盘排除守卫 [未执行]。
+  交付性质：三处源码级修复 + 一份介质故障定性；不是「已修复 / 已重建」。
+
+18.2 下一步顺序（串行，前一步不通过不进下一步）
+  P0-1  换盘。选正品 U 盘，32 GB 以上、U3/A1。到手先在 PC 上用
+        h2testw（或 f3write/f3read）做全容量写校验，通过后再刷镜像。
+        这一步能提前筛掉扩容盘与坏块盘，避免重演本轮 8 小时。
+  P0-2  重建 KERNEL + SYSTEM：一次带入 fs-resize 硬化与 ES 语言补丁。
+        重建后离线复核：fs-resize 内含 games_fs_valid/flush_partition/
+        ensure_games_partition；ES 补丁在构建日志中 apply 成功；
+        CI 引导链闸门 24 PASS / 0 FAIL。
+  P1-1  刷盘 + 首启：blkid /dev/sdX3 应为 TYPE="exfat" LABEL="GAMES"；
+        fs-resize.log 应出现
+        "GAMES: /dev/sdX3 formatted and verified (attempt 1)."；
+        parted 第 3 分区起点与 resize_storage_10G 一致；
+        /storage/games-external 已挂载且可写；连续冷启动 2 次仍保持。
+        （日志三态便于判读：already carries a verified exFAT filesystem
+          = 幂等跳过；formatted and verified = 本次成功；
+          the medium accepts writes but does not store them = 介质故障，
+          说明脚本已正确识别而不是静默固化。）
+  P1-2  ES 语言往返：中文 -> 英文 -> 中文，每次重启后保持；
+        核对 system.cfg 中 system.language 随选择变化。
+  P2    启动盘排除守卫（installtointernal DEVICE 硬编码、EMMC 脚本 seek=462）
+        + CI 静态闸门（出现 mklabel / parted rm / dd of=/dev/ 时必须同时存在
+        BOOT_DISK 排除守卫，否则构建失败）。
+  P3    渲染层帧率实测（4K vs 1080p、CPU 合成 vs GPU 合成），
+        用于验证或推翻 13.3 的归因。
+
+18.3 本轮新增禁止表述
+  不得写：「介质问题已修复」「GAMES 分区已恢复」「GAMES 已格式化成功」
+          「中文已修复（指板级）」「panfrost 卡顿已解决」「问题一根因已定位」
+  允许写：「介质已定性为静默丢写，处置是换盘」
+          「脚本已硬化并实机正/负例通过（源码级）」
+          「panfrost 与 renderD128 已板级确认出现」
+          「中文在 20261112 实机生效（手工等价验证）」
+
 ================================================================================
 本文所有结论均带证据分级；[未执行] 项不得在后续汇报中写成已完成。
-第一~九节已按 23:15 状态收敛；第十~十四节按时间顺序保留原始补记，
-其中「全文最新状态」类表述仅在第十四节有效；
-14.7 / 14.8 为 11-12 新增补记，冲突时以 14.8 为准。
+第一~九节已按 11-11 23:15 状态收敛；第十~十四节为 11-11 22:00 ~ 11-12 08:45
+的按时间顺序补记；第十五~十八节为 11-12 19:14 ~ 20:14 补记。
+全文最新状态以第十八节 + 第一节「1.1a 增量」为准；
+与第十六节 16.2 冲突处以 16.5 的修正条目为准。
 ================================================================================
