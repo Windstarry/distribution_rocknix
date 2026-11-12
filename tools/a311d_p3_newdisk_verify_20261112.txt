@@ -1,0 +1,115 @@
+A311D 20261112  换盘后 GAMES(P3) 验收报告
+==================================================
+时间     2026-11-12 20:29 ~ 20:42（北京时间）
+设备     192.168.31.7  AURKNIX 20261112  Linux 6.18.49  BUILD 85765b5c6d
+介质     Kingston DataTraveler 3.2  62.9 GB（替换上一块 048d:1234 CBM2199 故障盘）
+镜像     E:\A311d\AURKNIX-image-A311D-20261031\AURKNIX-image-A311D-20261112
+         \AURKNIX-A311D.aarch64-20261112.img（同一镜像，未重建）
+性质     只读核查 + 一次受控写入持久性实验（写入文件已删除）
+结论     P3 通过。exFAT 卷头落地、自动挂载、冷启动后数据完好。
+
+---------------------------------------------------------------
+一、结论（先看这一节）
+---------------------------------------------------------------
+1) 分区几何正确，三分区齐备，P3 类型字节 0x07：
+     P1 0x0c  32768s-4227071s    4,194,304s  fat32  ROCKNIX  -> /flash (ro)
+     P2 0x83  4227072s-19531250s 15,304,179s ext4   STORAGE  -> /storage (rw)
+     P3 0x07  19531776s-122879999s 103,348,224s（49.28 GiB）GAMES
+   P3 起点与 10G 分界一致（10,000,269,312 B），比上一块盘多出 49.28 GiB。
+2) exFAT 卷头真正落地（上一块盘正是缺这一段）：
+     主 VBR   sec0   ：eb 76 90 "EXFAT   "（偏移 3 起 8 字节）
+     备份 VBR sec12  ：eb 76 90 "EXFAT   "
+     blkid：LABEL="GAMES" UUID="667B-EFEF" TYPE="exfat" PARTUUID="bf6fec40-03"
+3) 自动挂载已生效，且本构建挂载点是两个：
+     /dev/sda3 on /storage/games-internal type exfat (rw,noatime,utf8)
+     /dev/sda3 on /storage/roms           type exfat (rw,noatime,utf8)
+     df: 49.3G，已用 198.8M（首次启动创建的 137 个系统目录）
+   注意：/storage/games-external 是本构建的**空目录**，不再作为挂载点；
+   上一轮报告按 games-external 判「未挂载」的写法在本构建上不适用。
+4) 持久性实测通过（这是上一块盘失败的同一实验）：
+     写 64MB  -> md5 a5fecd2417c10ab49ae458748b55fa5a
+     写 192MB -> md5 08137901042d33df352dd122a525e55e
+     sync + blockdev --flushbufs + drop_caches 后两者 md5 不变（Dirty=0）
+     reboot 后再次 md5 校验，两个值逐字符相同；df 与 reboot 前一致
+     => 数据经控制器缓存后确实落到闪存，不是缓存幻觉。
+5) dmesg 无 I/O error / exfat error（计数 0）。
+
+---------------------------------------------------------------
+二、本次运行的是旧版扩容脚本（重要）
+---------------------------------------------------------------
+- 设备 BUILD_ID = 85765b5c6d4e1f095dbf05f45dcfff1f5d7ba208，
+  早于脚本硬化提交 0c4f99c4f0，因此镜像里仍是**未加固**的 fs-resize。
+- /flash/fs-resize.log（1090 B）记录了本次完整流程：
+    parted resizepart 2 10G 成功
+    e2fsck -f -p /dev/sda2 成功
+    resize2fs -> 1,913,022 个 4K 块（7.30 GiB）
+    exfatprogs 1.2.9 / Creating exFAT filesystem(/dev/sda3, cluster size=131072)
+    写主/备份 VBR、FAT、位图、大写表、根目录项 全部 done
+    BYT; /dev/sda:62.9GB ... 3:10.0GB:62.9GB:52.9GB
+    Created new GAMES partition on /dev/sda3
+- 标记文件已全部清除（/flash/resize_storage_*、/storage/.please_resize_me），
+  说明旧脚本按「成功」路径收尾。
+- 【口径】旧脚本这次成功不代表它没有问题：它仍然没有返回码判断与回读校验，
+  本次能成功纯粹因为介质正常。硬化版本必须随下一次重建进入镜像，
+  否则换到任何有坏块/扩容的盘上仍会静默固化故障。
+- 【口径】日志 mtime 为 2024-06-25（设备无 RTC / 构建时钟），不能用来判断
+  「是否本次运行」；本次判据是日志内容含 62.9GB 与 "Created new GAMES partition"。
+- 日志中 "failed to init locale/codeset" 是 exfatprogs 在无 locale 环境的
+  常规告警（本次指定 iocharset=utf8、cluster=131072），不影响格式化结果，
+  已由卷头与挂载状态反证。
+
+---------------------------------------------------------------
+三、持久性实验记录（可复现）
+---------------------------------------------------------------
+mkdir -p /storage/roms/.p3probe
+dd if=/dev/urandom of=/storage/roms/.p3probe/a.bin bs=1M count=64
+md5sum  -> a5fecd2417c10ab49ae458748b55fa5a
+sync; blockdev --flushbufs /dev/sda3; echo 3 > /proc/sys/vm/drop_caches
+md5sum  -> a5fecd2417c10ab49ae458748b55fa5a   （一致）
+dd if=/dev/urandom of=/storage/roms/.p3probe/b.bin bs=1M count=192
+md5sum  -> 08137901042d33df352dd122a525e55e
+sync; blockdev --flushbufs /dev/sda3; echo 3 > /proc/sys/vm/drop_caches
+md5sum  -> 08137901042d33df352dd122a525e55e   （一致）
+cat /proc/meminfo | grep -E 'Dirty|Writeback'  -> 均为 0 kB
+df -h /storage/roms  -> 454.9M 已用（198.8M + 256M，账面吻合）
+sync; sync; reboot   （正常重启，非 reboot -f）
+重启后 54 s SSH 恢复，重新 md5：
+  a.bin a5fecd2417c10ab49ae458748b55fa5a
+  b.bin 08137901042d33df352dd122a525e55e      （与重启前逐字符相同）
+清理：rm -rf /storage/roms/.p3probe；sync；df 回到 198.8M。
+
+写速参考（同一 U 盘，USB2.0）：64MB 首写 119.4MB/s（含页缓存），
+192MB 实测 36.5MB/s。仅作量级参考，不是容量校验依据。
+
+---------------------------------------------------------------
+四、与上一块故障盘的对照
+---------------------------------------------------------------
+项目            旧盘 048d:1234 CBM2199       新盘 Kingston 64GB
+容量            33.6GB（65,536,000s）        62.9GB（122,880,000s）
+P3 长度         46,004,224s（23.55GB）       103,348,224s（49.28GiB）
+主 VBR          sec0 全 0xFF（缺失）         eb7690 + "EXFAT"（有效）
+备份 VBR        sec12 全 0xFF（缺失）        eb7690 + "EXFAT"（有效）
+blkid TYPE      无                            exfat
+自动挂载        无                            games-internal + roms
+mkfs 返回码     0（虚报成功）                0（真实成功）
+掉电后          「已写入」元数据消失          数据完好
+判定            介质静默丢写，报废            可用
+
+---------------------------------------------------------------
+五、未执行 / 未验证
+---------------------------------------------------------------
+[未执行] h2testw / f3 全容量写校验（PC 端，唯一能覆盖 49GB 全段的手段）
+[未执行] 在 P3 写入量产级数据（ROM/存档）后的容量与性能长跑
+[未执行] 硬化版 fs-resize 上机（需重建；当前镜像仍是旧脚本）
+[未执行] ES 语言补丁上机（同一镜像未含 20280d67de）
+
+---------------------------------------------------------------
+六、建议下一步
+---------------------------------------------------------------
+1. 先在 PC 上对新盘做 h2testw（或 f3write/f3read）全容量写校验，再决定是否
+   把它当长期盘用；本轮的写测只覆盖前 ~455MB 分配区，不能替代全容量校验。
+2. 触发一次重建（含 0c4f99c4f0 与 20280d67de），刷盘后按 18.2 的 P1-1 验收：
+   fs-resize.log 应出现 "GAMES: /dev/sdX3 formatted and verified (attempt 1)."；
+   重复冷启动 2 次仍保持，且不重复格式化（幂等）。
+3. 老盘（33.6GB VendorCo）确认报废，不要再用于任何刷写；其上的 /storage
+   数据不可信。
