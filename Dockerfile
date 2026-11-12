@@ -3,16 +3,35 @@ FROM ubuntu:jammy
 ARG DEBIAN_FRONTEND=noninteractive
 SHELL ["/usr/bin/bash", "-c"]
 
-# apt 在 GitHub Actions runner 上偶发 IPv6 连接失败 / 下载超时，会让
-# apt-get 以 exit 100 中止整个镜像构建。这里把重试、超时与强制 IPv4
-# 写成 apt 全局配置，使本文件后续所有 apt 调用（含下方大批量安装）同样生效。
+# GitHub Actions runner 上 apt 偶发 DNS 解析失败（run 43059518498 实测
+# "Could not resolve 'archive.ubuntu.com'"）。默认 apt-get update 对索引
+# 全部下载失败只打印 W 警告并返回 0，链式命令会继续到 install，报出误导性的
+# "no installation candidate" / "Unable to locate package sudo"。
+# 故：严格模式让 update 真实失败 + 校验索引文件确实落盘 + 有限次退避重试。
+# 不再强制 IPv4：IPv6 连接失败只是推断，实测是 DNS 解析失败；强制 IPv4
+# 会单向收窄可用网络路径，去掉后正常路径不受影响（getent ahostsv4 已验证）。
+# 该 apt 配置为全局配置，对下方大批量安装同样生效。
 RUN printf '%s\n' \
       'Acquire::Retries "5";' \
       'Acquire::http::Timeout "60";' \
       'Acquire::https::Timeout "60";' \
-      'Acquire::ForceIPv4 "true";' \
+      'APT::Update::Error-Mode "any";' \
       > /etc/apt/apt.conf.d/99rocknix-ci \
- && apt-get update \
+ && for i in 1 2 3; do \
+      echo "apt-get update attempt ${i}/3"; \
+      if apt-get update \
+         && ls /var/lib/apt/lists/*Packages* >/dev/null 2>&1; then \
+        break; \
+      fi; \
+      if [ "${i}" -eq 3 ]; then \
+        echo "ERROR: apt indexes unavailable after 3 attempts" >&2; \
+        getent hosts archive.ubuntu.com \
+          || echo "DNS: cannot resolve archive.ubuntu.com" >&2; \
+        exit 1; \
+      fi; \
+      echo "apt update failed, retrying in 10s" >&2; \
+      sleep 10; \
+    done \
  && apt-get dist-upgrade -y \
  && apt-get install -y locales sudo
 

@@ -2,7 +2,7 @@
 A311D / AURKNIX 移植交接文档（当前状态总览）
 ================================================================================
 生成时间：2026-11-11 00:30（北京时间 GMT+8）
-最近更新：2026-11-11 23:15（本轮整理：第一~九节口径收敛；第十四节为最新状态）
+最近更新：2026-11-12 08:45（14.8 补记 CI Docker/apt 失败实证与修正；第十四节为最新状态）
 文档定位：接手人第一阅读入口。本文自包含，覆盖并取代此前各轮口头结论。
           第十~十四节按时间顺序保留各轮补记，均为历史时点记录；
           凡与前文冲突，一律以第十四节 + 第一节「当前状态速览」为准。
@@ -1041,8 +1041,65 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
        板级验收（14.4）全部仍未执行。若重跑仍失败，须提供日志中
        apt 的完整 Err:/E: 行再定位，不要盲目换源或删 dist-upgrade。
 
+14.8 补记：2026-11-12 08:45 CI Docker/apt 失败取证与 14.7 修正
+  现象 [实证-CI 日志]：run 43059518498（UTC 11-11 16:33，北京时间
+      11-12 00:33），唯一失败作业 Docker / build-docker-image
+      （job 130658408511，2m15s），下游 dtbselect / user-manual-pdfs /
+      Build Devices / Release 全部 skipped。失败层为 Dockerfile 第一个
+      RUN（14.7 修改后的版本），exit code 100。
+  完整 Err:/E: 行（14.7 当时缺此取证，本轮补齐）：
+      Ign:1..4 反复出现（Acquire::Retries=5 的重试），37.44s 起
+      Err:1 http://archive.ubuntu.com/ubuntu jammy InRelease
+        Could not resolve 'archive.ubuntu.com'
+      Err:4 http://security.ubuntu.com/ubuntu jammy-security InRelease
+        Could not resolve 'security.ubuntu.com'
+      W: Some index files failed to download. They have been ignored...
+      E: Package 'locales' has no installation candidate
+      E: Unable to locate package sudo
+  对照 [实证-CI 日志]：成功 run 42953818098（旧 Dockerfile、
+      apt-get update --fix-missing）在 0.37~1.8s 内 Get 到 18 个索引，
+      DNS 正常；两次构建的基础镜像、包清单、runner 均相同。
+  根因 [实证-本地 + 实证-CI 日志]：把本地 ubuntu:22.04 容器的
+      sources.list 指向 .invalid 域名后，默认 apt-get update 对索引
+      全部失败只打印 W 警告且 RC=0，链式命令继续到 install，才报出
+      「无安装候选 / 找不到包」；加 APT::Update::Error-Mode=any 后
+      RC=100。故本次误导性报错的机制已被完整复现：直接触发条件是
+      runner 侧 DNS 解析失败，叠加 apt update 静默返回 0。
+      「runner 为何 DNS 不可达」仍属 [推断]（Azure runner DNS 抖动
+      或 buildx 构建容器网络命名空间），不得升级为已定位根因。
+  14.7 修正 [实证-本地]：14.7 的 Acquire::ForceIPv4=true 依据是
+      「IPv6 连接失败」[推断]，与本次实测的 DNS 解析失败不符，且会
+      单向收窄可用网络路径。本地 getent ahostsv4 archive.ubuntu.com
+      正常，去掉后正常路径不受影响。保留 Retries=5 / Timeout=60。
+  修复 [已完成-源码级]：根 Dockerfile 第一个 RUN 改为四项全局配置
+      （以 APT::Update::Error-Mode "any" 取代 ForceIPv4），并把
+      apt-get update 包进 3 次退避重试：每次要求 update 成功且
+      /var/lib/apt/lists/*Packages* 确实存在；三次均失败则打印
+      「apt indexes unavailable」+ getent DNS 诊断并 exit 1。
+      未改基础镜像、包清单、DEBIAN_FRONTEND、tools/docker/ 下 4 个
+      Dockerfile、任何 workflow；未引入额外依赖。后续层 apt install
+      仍受同一份 apt 全局配置约束。
+  验证 [实证-本地 Docker]：
+      - docker build --check 对真实 Dockerfile：Check complete,
+        no warnings found。
+      - 从真实 Dockerfile 提取前 36 行构造探针（仅规范化 LF 行尾）：
+        --network=host --no-cache 实跑 BUILD_RC=0，attempt 1/3 成功，
+        119.6s 完成；后续层 apt-config dump 确认 Retries / Timeout /
+        Error-Mode 三项生效，ForceIPv4 已不存在。
+      - --network=none --no-cache 故障注入：BUILD_RC=1，依次出现
+        attempt 1/3、2/3、3/3 与 10s 退避，末尾为
+        ERROR: apt indexes unavailable after 3 attempts 与
+        DNS: cannot resolve archive.ubuntu.com；误导性的
+        no installation candidate / Unable to locate package 计 0 次。
+  [未执行] GitHub Actions 上重新构建并推送 ghcr.io 镜像；出图与
+      板级验收（14.4）全部仍未执行。若 runner DNS 在整个构建窗口
+      持续不可达，3 次重试（约 120s）仍会失败，届时优先重跑，或
+      在 workflow 层为 buildx 设 driver-opts network=host；仍不要
+      盲目换源或删 dist-upgrade。
+
 ================================================================================
 本文所有结论均带证据分级；[未执行] 项不得在后续汇报中写成已完成。
 第一~九节已按 23:15 状态收敛；第十~十四节按时间顺序保留原始补记，
-其中「全文最新状态」类表述仅在第十四节有效；14.7 为 11-12 新增补记。
+其中「全文最新状态」类表述仅在第十四节有效；
+14.7 / 14.8 为 11-12 新增补记，冲突时以 14.8 为准。
 ================================================================================
