@@ -115,3 +115,71 @@ KMS（/sys/kernel/debug/dri/0/state）
 4. fb0 报 4K 属 drm_fbdev 行为，不是故障；若后续有组件按 fb0 取分辨率，
    需要单独处理（当前 ES/sway 不读它）。
 ================================================================================
+
+八、初始分辨率为什么是 3840x2160@60（已追到构建层）
+--------------------------------------------------------------------------------
+链路（每一步均有实机证据）：
+  1. 镜像默认模板 /usr/config/system/configs/system.cfg（设备实测 8785 B）
+     里没有任何 display_mode 键：
+       grep -n "display_mode" /usr/config/system/configs/system.cfg -> rc=1
+  2. 首次启动把模板 seed 成 /storage/.config/system/configs/system.cfg
+     （001-functions:set_setting 中 cp -f；chksysconfig verify 在缺
+      hostname/retroarch 配置时做整目录 rsync）。
+  3. 111-sway-init 用 get_setting 取不到值 → 不生成 output ... mode 行。
+     本次改动前设备上的 /storage/.config/sway/config 只有：
+       output HDMI-A-1 transform 0 / bg #000000 solid_color /
+       allow_tearing yes / max_render_time off
+  4. 没有 mode 指令时 wlroots 取连接器 preferred mode。该电视 EDID
+     （厂商 FFA、型号 "FFA SMART TV"）首选即 3840x2160@60：
+       /sys/class/drm/card0-HDMI-A-1/modes 首项 3840x2160（共 9 条 4K 变体）
+       sway get_outputs 的 modes 首项 3840x2160@60000
+  → 因此"出厂默认"= EDID 首选 4K@60，不是镜像里写死的值。
+
+补充一个容易误判的现象：
+  启动早期还会短暂停在 u-boot 传下来的 1366x768（/proc/cmdline 的
+  vout=1366x768p60hz，Stage-A 初值）。一旦 HDMI 重新协商/hotplug，
+  wlroots 就切到 EDID 首选的 4K。
+  证据：同一天两次取样，20:53 截图为 1366x768，21:16 截图为 3840x2160。
+  即"初始值"取决于本次启动有没有发生 modeset，而稳态是 4K@60。
+
+启动时序（说明为什么把默认值写进模板就能在首启生效）：
+  journalctl -b -o short-monotonic
+    [179.6] Starting rocknix-autostart.service...
+    [209.29] Starting[1768]: sway.service essway.service...
+    [209.36] Starting sway.service...
+    [209.41] Finished rocknix-autostart.service.
+  编号脚本（含 111-sway-init）先跑完，再由 autostart 拉起 sway/essway，
+  所以模板里的 display_mode_hdmi 在第一启动就能被读到。
+
+九、构建层修改（本次落地）
+--------------------------------------------------------------------------------
+文件：projects/ROCKNIX/packages/rocknix/package.mk
+位置：makeinstall_target() 内既有的 if [ "${DEVICE}" = "A311D" ] 块，
+      紧跟 gpu.driver=panfrost 之后：
+        if grep -q '^system.display_mode_hdmi=' <模板>
+        then sed -i "s#^system.display_mode_hdmi=.*#system.display_mode_hdmi=1920x1080@60Hz#"
+        else echo "system.display_mode_hdmi=1920x1080@60Hz" >> <模板>
+        fi
+理由：与同块 gpu.driver 的写法保持一致（存在则覆盖、不存在则追加），
+      作用域仅 A311D，不改公共模板，其他机型仍按 EDID 首选。
+
+校验（本地，未重建镜像）：
+  bash -n projects/ROCKNIX/packages/rocknix/package.mk        -> 通过
+  复制模板到临时 INSTALL 目录，按上述逻辑跑两遍：
+    第一遍 -> 追加，落在模板第 322 行
+    第二遍 -> grep -c 结果仍为 1（幂等，不会重复追加）
+
+生效范围与限制：
+  - 全新刷盘：首启 /storage 为空，由模板 seed，直接 1080p60。
+  - 已存在的 /storage：chksysconfig verify 只在缺 hostname/retroarch 配置时
+    整目录 rsync，不会补单个新键；需手工 set_setting 一次（本机已于 21:17
+    写入，现 system.cfg:231）。
+  - [未执行] 完整重建 + 刷盘 + 首启复验；本轮只到源码级与本地模拟。
+  - 值格式必须为 WxH@RHz：sway-init 的解析只认 "@数字Hz"（或纯数字），
+    写成 1920x1080p60hz 这类形式不会生成 mode 行。ES 菜单写回的格式未验证。
+
+十、附带收益
+--------------------------------------------------------------------------------
+4K -> 1080p 使合成像素从 829 万降到 207 万（约 1/4），对 G52 + CPU 合成
+这条路径是直接减负，可作为 18.2 P3「4K vs 1080p 帧率对照」的一半条件。
+================================================================================

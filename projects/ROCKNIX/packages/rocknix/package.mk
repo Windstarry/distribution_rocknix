@@ -37,6 +37,21 @@ makeinstall_target() {
     else
       echo "gpu.driver=panfrost" >> ${INSTALL}/usr/config/system/configs/system.cfg
     fi
+
+    ### Default HDMI output mode: 1920x1080@60Hz.
+    ### sway/111-sway-init only appends "output HDMI-A-1 mode ..." when
+    ### system.display_mode_hdmi is set; without it wlroots takes the sink's
+    ### preferred mode from EDID. The EDID this box is usually paired with
+    ### ("FFA SMART TV") advertises 3840x2160@60 as the preferred mode, so a
+    ### fresh image comes up at 4K: ES text becomes tiny and the compositor
+    ### fills ~4x the pixels on a G52. Pin 1080p60 as the build default; the
+    ### user can still override it from ES or by deleting this key.
+    if grep -q '^system.display_mode_hdmi=' ${INSTALL}/usr/config/system/configs/system.cfg
+    then
+      sed -i "s#^system.display_mode_hdmi=.*#system.display_mode_hdmi=1920x1080@60Hz#" ${INSTALL}/usr/config/system/configs/system.cfg
+    else
+      echo "system.display_mode_hdmi=1920x1080@60Hz" >> ${INSTALL}/usr/config/system/configs/system.cfg
+    fi
   fi
 
   mkdir -p ${INSTALL}/usr/bin/
