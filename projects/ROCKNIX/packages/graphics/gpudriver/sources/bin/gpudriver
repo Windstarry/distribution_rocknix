@@ -6,14 +6,39 @@
 
 GPU_DRIVER_SETTING_KEY="gpu.driver"
 
+# The DTB overlay commands in the two "set driver" branches are injected
+# by gpudriver/package.mk. Devices without a dtbo carrier (A311D chain-boot)
+# substitute empty commands: changing the driver only records the setting
+# and takes effect on the next boot, the running stack is never hot-swapped.
+
 get_current_driver() {
   CONFDRIVER=$(get_setting ${GPU_DRIVER_SETTING_KEY})
-  if [ -z ${CONFDRIVER} ]; then
+  if [ -z "${CONFDRIVER}" ]; then
     CONFDRIVER="libmali"              # DEFAULT
     set_setting ${GPU_DRIVER_SETTING_KEY} ${CONFDRIVER}
   fi
 }
 
+# /proc/mounts reports false positives on a squashfs root, so use mount
+# output for every bind check. A /dev/null bind turns the target into a
+# character device, which means [ -f ] is only usable before masking.
+is_masked() {
+  mount | grep -q "on $1 "
+}
+
+mask_file() {
+  [ -f "$1" ] || return 0
+  if ! is_masked "$1"; then
+    mount --bind /dev/null "$1"
+  fi
+}
+
+unmask_file() {
+  if is_masked "$1"; then
+    umount "$1"
+  fi
+  return 0
+}
 
 # When loading a driver, do two things:
 #   * ensure needed driver is loaded and other is not
@@ -26,24 +51,53 @@ load_driver() {
       modprobe -r @PAN@
       modprobe mali_kbase
 
-      grep -q /usr/lib/libEGL.so /proc/mounts || find /usr/{lib,lib32}/mali -type f -exec bash -c 'lib={}; mount --bind $lib ${lib/\/mali\//\/}' ';'
+      # Bind-mount mali GLES libraries over mesa if not already done.
+      # Use mount output (not /proc/mounts) to avoid squashfs false positives.
+      mount | grep -q "on /usr/lib/libEGL.so" || find /usr/{lib,lib32}/mali -type f -exec bash -c 'lib={}; mount --bind $lib ${lib/\/mali\//\/}' ';'
       # Portmaster is not ready for SDL in glesonly subdir, so override libs the dirty way
       if [ -d /usr/lib/glesonly ]; then
-        grep -q /usr/lib/libSDL2-2.0.so /proc/mounts || find /usr/{lib,lib32}/glesonly -type f -exec bash -c 'lib={}; mount --bind $lib ${lib/\/glesonly\//\/}' ';'
+        mount | grep -q "on /usr/lib/libSDL2" || find /usr/{lib,lib32}/glesonly -type f -exec bash -c 'lib={}; mount --bind $lib ${lib/\/glesonly\//\/}' ';'
       fi
-      mount --bind /dev/null /usr/lib/libGL.so
-      mount --bind /dev/null /usr/lib32/libGL.so
+
+      # libGL is not provided by the vendor stack. Only mask paths that
+      # exist (lib32 is absent on some aarch64 builds), and never stack
+      # another bind on a repeated --start.
+      for libgl in /usr/lib/libGL.so /usr/lib32/libGL.so; do
+        if [ -f "${libgl}" ] && ! is_masked "${libgl}"; then
+          mount --bind /dev/null "${libgl}"
+        fi
+      done
+
+      # The Vulkan loader must see exactly one ICD. Unmask mali first so a
+      # same-session switch back is symmetric, then mask every panfrost ICD.
+      unmask_file /usr/share/vulkan/icd.d/mali.json
+      for icd in /usr/share/vulkan/icd.d/panfrost_icd.*.json; do
+        mask_file "${icd}"
+      done
       ;;
     "panfrost")
       modprobe -r mali_kbase
       modprobe @PAN@
 
-      grep -q /usr/lib/libEGL.so /proc/mounts && find /usr/lib/mali -type f -exec bash -c 'lib={}; umount ${lib/\/mali\//\/}' ';'
+      mount | grep -q "on /usr/lib/libEGL.so" && find /usr/lib/mali -type f -exec bash -c 'lib={}; umount ${lib/\/mali\//\/}' ';'
       if [ -d /usr/lib/glesonly ]; then
-        grep -q /usr/lib/libSDL2-2.0.so /proc/mounts && find /usr/lib/glesonly -type f -exec bash -c 'lib={}; umount ${lib/\/glesonly\//\/}' ';'
+        mount | grep -q "on /usr/lib/libSDL2" && find /usr/lib/glesonly -type f -exec bash -c 'lib={}; umount ${lib/\/glesonly\//\/}' ';'
       fi
+
+      # Restore libGL if the vendor stack had masked it. A bind-mounted
+      # /dev/null is a character device, so this check cannot use [ -f ].
+      for libgl in /usr/lib/libGL.so /usr/lib32/libGL.so; do
+        unmask_file "${libgl}"
+      done
+
+      # Unmask panfrost, then mask mali: symmetric with the libmali branch.
+      for icd in /usr/share/vulkan/icd.d/panfrost_icd.*.json; do
+        unmask_file "${icd}"
+      done
+      mask_file /usr/share/vulkan/icd.d/mali.json
       ;;
     *)
+      echo "gpudriver: unsupported driver '${DRIVER_TO_LOAD}', expected: @GPU_OPTIONS@" >&2
       exit 3
       ;;
   esac

@@ -14,12 +14,6 @@ post_makeinstall_target() {
   mkdir -p "${INSTALL}/usr/bin/"
   cp -v "${PKG_BUILD}/bin/gpudriver" "${INSTALL}/usr/bin/"
 
-  # chain-boot GPU stack selector, writes gpu_dtb into /flash/config.ini
-  if [ "${DEVICE}" = "A311D" ]; then
-    cp -v "${PKG_BUILD}/bin/gpu-dtb" "${INSTALL}/usr/bin/"
-    chmod +x "${INSTALL}/usr/bin/gpu-dtb"
-  fi
-
   # set the correct mesa pan kernel driver module based on device
   case ${DEVICE} in
     RK3588)
@@ -37,10 +31,12 @@ post_makeinstall_target() {
     A311D)
       PAN="panfrost"
       GPU_OPTIONS="panfrost libmali"
-      # Chain-boot has no extlinux.conf: the DTB is selected through
-      # /flash/config.ini (gpu_dtb) and applied on the next reboot.
-      DTB_OVERLAY_LOAD="\/usr\/bin\/gpu-dtb set panfrost"
-      DTB_OVERLAY_UNLOAD="\/usr\/bin\/gpu-dtb set libmali"
+      # Chain-boot has no extlinux.conf / dtbo carrier, and cfgload always
+      # loads the single dtb.img. Both stacks bind the same bifrost node,
+      # so switching is done in userspace only. Leave the DTB hooks empty,
+      # exactly like the default *) branch.
+      DTB_OVERLAY_LOAD=""
+      DTB_OVERLAY_UNLOAD=""
     ;;
     RK356X)
       PAN="panfrost"
