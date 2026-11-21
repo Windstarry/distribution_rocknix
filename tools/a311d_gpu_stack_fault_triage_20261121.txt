@@ -1,0 +1,193 @@
+================================================================================
+A311D 双栈 GPU 两个已知现象的故障排查分析
+2026-11-21 14:17~14:26 北京时间 GMT+8
+================================================================================
+
+证据分级：[实证]＝本机 SSH 只读采集或本地仓库字节/源码可核；
+          [推断]＝基于实证的因果判断，未经单一变量板级复验；
+          [未验证]＝需要切换驱动或重建镜像才能确认。
+
+设备与镜像身份 [实证]
+  192.168.31.7 root/rocknix，SSH 可登录（paramiko，连接偶发 10054/banner
+  错误，重试后成功，属设备侧 sshd 并发限制，非系统崩溃）。
+  /etc/os-release: OS_VERSION=20261113，BUILD_ID=26e07ee61c958d7ea4b2597
+  374c8bd75898660e3，BUILD_BRANCH=a311d，BUILD_DATE=Fri Nov 13 06:25:03
+  UTC 2026，HW_DEVICE=A311D。BUILD_ID 与本地 origin/a311d 提交
+  26e07ee61c 一一对应（该提交即「stage-1 GPU 栈切换对齐 20261108 参考镜像」）。
+  内核 6.18.49 #1 SMP PREEMPT Fri Nov 13 04:41:03 UTC 2026 aarch64。
+  本地镜像目录 E:/A311d/.../AURKNIX-image-A311D-20261113/ 含
+  AURKNIX-A311D.aarch64-20261113.img.gz（1,326,050,441 B）与 sha256
+  b068ca3fd07c94f2ea6b5239b7f10812211e4c86e52080f0056459f8a782b357。
+  uptime 采集时约 6~19 分钟；温度 cpu-thermal 39600、ddr-thermal 41700；
+  sway current_mode=1920x1080@60000（1080p60 已生效，21.7/21.8 的注入在
+  本镜像内）。
+
+当前实际在用的驱动栈（重要，先统一口径）[实证]
+  /storage/.config/system/configs/system.cfg 第 112 行 gpu.driver=libmali。
+  lsmod: mali_kbase 696320 20（已加载）；panfrost.ko 在盘上但按切换设计
+  未加载 —— 这是 libmali 模式的预期状态，不是故障。
+  /dev/mali0 存在；/dev/dri/card0=meson-drm（显示），card1/renderD128
+  =etnaviv（NPU 节点 vivante,gc，来自提交 a482217e0a 的
+  CONFIG_DRM_ETNAVIV=y，与 GPU 栈无关）。
+  libmali.so.1.9.0（57,945,816 B）内嵌串 "1.5 Bifrost-r51p0-00eac0"；
+  libmali-hook.so.1.9.0 存在；mali_kbase 版本 r54p2-02eac0 (UK 11.46)。
+  mount 显示 libEGL.so.1.1.0 / libGLESv2.so.2.1.0 由 loop0(squashfs)
+  覆盖、libGL.so.1.7.0 与 panfrost_icd.armv8...json 被 /dev/null 屏蔽、
+  mali.json 生效 —— 与 gpudriver libmali 分支完全一致。
+  sway 进程映射 /dev/mali0、libEGL.so.1.1.0、libGLESv2.so.2.1.0、
+  libmali-hook.so.1.9.0、libmali.so.1.9.0 —— 前端确实走 libmali。
+
+================================================================================
+问题 1：使用 panfrost 驱动时屏幕显示绿色
+================================================================================
+
+一、驱动修改前后差异（本地仓库可核，这是分析基线）
+  1. 11877deab7（10-30 初始移植）：DTS 默认 libmali 形态，
+     gpu@ffe40000(mali_vulkan/arm,mali-midgard) status=okay，
+     &mali(arm,mali-bifrost，panfrost 用) status=disabled；
+     注释声称存在 *-panfrost.dtb 变体，实际从不产出。
+  2. a482217e0a（10-31）：&npu status okay + CONFIG_DRM_ETNAVIV=y。
+     由此产生今天的 /dev/dri/card1/renderD128=etnaviv 假 GPU 节点。
+  3. 708c46093e（11-10，panfrost「可用」的分界）：DTS 翻转 ——
+     mali_vulkan -> status=disabled，&mali -> status=okay；
+     config.ini 注释改为「dtb.img = panfrost-ready」。
+     当时记录：本板 libmali 起不来前端，只有 panfrost 能起，
+     故把默认 dtb 翻成 panfrost 形态。**这一翻转正是绿屏现象出现前后的
+     唯一 GPU 侧 DTS 改动**。
+  4. 26e07ee61c（11-13，当前镜像）：删除 gpu-dtb 与 DTB overlay 钩子，
+     改为纯用户态互斥切换；出厂种子仍 gpu.driver=panfrost；
+     gpudriver 恢复 Vulkan ICD 互斥与 mount 绑定判定；
+     package.mk 注释改为「kbase r54p2 / libmali r51p0 DDK 不匹配，
+     libmali 不作为首启默认」。引导链字节不变，dtb.img 仍是
+     「单 bifrost 节点、status 缺省 okay」。
+
+二、可能原因（按优先级，均需在 panfrost 模式下做单一变量验证）
+  P1-1【最可能】bifrost 节点启用后被 etnaviv 假节点抢先占用/枚举干扰
+    [实证] DTS 翻转只把 &mali 打开，没有移除 10-31 打开的 &npu(etnaviv)；
+    设备今天在 libmali 模式下仍可见 card1/renderD128=etnaviv。
+    [推断] panfrost 模式下 wlroots 以 WLR_DRM_DEVICES=/dev/dri/card0
+    （meson-drm）显示，但 GLES/GBM 的设备枚举可能在
+    renderD128(etnaviv) 与 panfrost render node 之间取到错误者；
+    etnaviv 无真实扫描输出，帧缓冲内容送显异常，典型表现就是纯色
+    （绿/黑）而非花屏。绿色而非黑色提示「有帧但像素格式/颜色空间错」
+    的可能性高于「完全没渲染」。
+    验证：切 panfrost 后比对 ls -l /dev/dri、readlink 各 renderD 的
+    driver、SWAYSOCK swaymsg -t get_outputs、grim 截图；检查
+    /sys/kernel/debug/dri/0/state 的 plane FB pixel format 与 crtc mode，
+    看是否 green 来自 AFBC/格式不匹配。
+  P1-2 AFBC / direct scanout 通路在 A311D 未分流
+    [实证] 参考镜像 20261108 的 quirk 090-ui_service 专门在 libmali 时
+    写 MALI_WAYLAND_AFBC=0 允许 direct scanout；plan v2 第八节把
+    「补齐按驱动分流 quirk（含 devfreq 路径、MALI_WAYLAND_AFBC=0）」
+    列为阶段 2 待办，当前 A311D 镜像未做这一分流。
+    [推断] panfrost 侧若仍按参考的 forcepack 等 quirk 跑，而
+    meson-drm 对 panfrost 的 AFBC modifier 支持不完整，会出绿色。
+    验证：切 panfrost 后逐个 unset PAN_MESA_DEBUG=forcepack、
+    设置 PAN_MESA_DEBUG=nofbc / MESA_LOADER_DRIVER_OVERRIDE、比对截图。
+  P1-3 显示模式与扫描输出路径的时序差（次要）
+    [实证] cmdline vout=1366x768p60hz、hdmimode=1366x768p60hz，
+    但 sway 由 system.display_mode_hdmi=1920x1080@60Hz 强制 modeset
+    到 1920x1080；今天已实测「热切模式不重建缓冲 -> 只见左上角」，
+    冷启动后正常。
+    [推断] panfrost 的 modeset 若先于/后于 meson-drm 的 vout 初始化，
+    早期帧缓冲可能以错误 stride 送显呈绿。属瞬态还是稳态需截图区分。
+
+三、处理建议
+  S1-1 先在 panfrost 模式取一次「硬证据三件套」：/dev/dri 各节点
+       驱动归属、KMS state 的 plane format/modifier、grim 截图；
+       用它们确认绿色是「无渲染」「格式错」还是「etnaviv 抢节点」。
+  S1-2 若确认 etnaviv 干扰：在 A311D DTS 里把 &npu 恢复 disabled
+       （或 CONFIG_DRM_ETNAVIV 改 =m 并不加载），让 render node 唯一；
+       代价是 NPU 不可用（当前并无使用 NPU 的负载）。
+  S1-3 若确认 AFBC：按 plan v2 第八节补齐 A311D 按 gpu.driver 分流的
+       quirk（panfrost 支设 PAN_MESA_DEBUG、libmali 支设
+       MALI_WAYLAND_AFBC=0 与 devfreq 路径），先用运行时环境变量验证
+       再固化为 quirk 文件。
+  S1-4 若绿屏只在首屏出现、冷启动后消失，则不改驱动栈，按第 21 节
+       已有结论处理（改分辨率必须重启前端/整机）。
+
+================================================================================
+问题 2：使用 libmali 驱动时卡在「载入中」，无法加载前端
+================================================================================
+
+一、阻塞点定位（本轮实证，证据链最完整的一条）
+  E1 [实证] DDK 版本不匹配被实测命中：
+       内核 mali_kbase 版本 r54p2-02eac0；用户态 libmali.so.1.9.0 内嵌
+       "Bifrost-r51p0-00eac0"。二者不同版本，正是 plan v2 第零节/
+       第七节与 26e07ee61c 注释里标注的「libmali 加载失败」首要实证项。
+  E2 [实证] GPU 指令级错误风暴：dmesg/journal 自启动 189 s 起持续出现
+       "mali ffe40000.gpu: error detected from slot 1, job status
+       0x00000051 (INSTR_INVALID_ENC)" 与 "t6xx: GPU fault 0x51 from
+       job slot 0/1"，计数 2056 次；最后一次约在 779 s（journal 时间
+       01:26:10 仍有新条目）。0x51=INSTR_INVALID_ENC 是 GPU 取到无法
+       解码的着色器指令 —— 与 r51p0 编译器产物 / r54p2 内核接口不兼容
+       这一因果高度一致 [推断，需单一变量复验]。
+  E3 [实证] 卡死位置在渲染提交层，不在「找不到设备」：
+       sway 进程已映射 /dev/mali0 + libEGL/libGLESv2/libmali-hook/
+       libmali，说明 EGL 初始化成功；进程状态 sway(1782) Sl
+       do_epoll_wait、emulationstation(1980) Sl do_sys_poll、
+       swaybg(2004) Sl do_sys_poll —— 均处于正常事件等待而非 D 状态
+       死锁；mali_jd/mali_kbase_hwcnt 内核线程在 worker_thread。
+       [推断] ES 已进入主循环但首帧渲染作业被 GPU fault 反复打断，
+       永远拿不到可呈现帧 -> UI 停在「载入中」。
+  E4 [实证] fault 计数在多次相隔数分钟的采样中稳定为 2056，不再增长；
+       SSH 连接出现 10054/banner 错误，load average 由 0.47 升到 1.46。
+       [推断] 前端渲染提交已停止（卡住后不再提交），残留内核线程与
+       反复连接尝试造成负载；不是持续 GPU 硬件故障。
+  E5 [实证] 切换机制本身正确：gpu.driver=libmali、bind mount 与 ICD
+       屏蔽状态、mali_kbase 加载、panfrost 未加载，均与 gpudriver
+       libmali 分支设计一致；因此问题不在「切换没生效」。
+
+二、可能原因（按优先级）
+  R2-1【首要】kbase r54p2 与 libmali r51p0 DDK 版本不匹配，导致
+       GLES 着色器指令非法、GPU fault 0x51，前端首帧无法完成。
+       这是 plan v2 已标记为「决定性实证项」的同一问题，本轮板级命中。
+  R2-2【次要，证据不足】缺 A311D 按驱动分流的 libmali quirk：
+       plan v2 第八节列的 devfreq 路径（ffe40000.gpu_mali_vulkan）、
+       MALI_WAYLAND_AFBC=0、UI_SERVICE 归一等尚未在 A311D 落地；
+       即使版本匹配，这些缺失也可能让 ES 在 libmali 下仍起不来。
+  R2-3【排除】DTB 节点形态：dtb.img 只有 bifrost 节点（status 缺省
+       okay），libmali/kbase r54p2 支持 bifrost；/dev/mali0 已出现，
+       故「节点形态不对」不是本次卡载入中的主因。
+  R2-4【排除】panfrost 模块残留：libmali 模式下 panfrost 未加载、
+       panfrost ICD 被屏蔽、libGL 被屏蔽，无双栈串扰证据。
+
+三、验证思路（按成本从低到高）
+  V1 版本对齐实验（决定性）：保持其他不变，仅把用户态 libmali 换成
+     r54p2（或把内核 kbase 换成 r51p0），重启后看 INSTR_INVALID_ENC
+     是否消失、ES 是否进主界面。二者必须同版本，这是 vendor DDK 的
+     硬性约束，不是可选项。
+  V2 若无法立刻换库：在 libmali 模式下手工清 dmesg、只看新 fault
+     的提交者；用 strace -f -e ioctl 挂 emulationstation/sway 抓
+     /dev/mali0 的 ioctl 返回，确认 fault 由哪一层 GLES 提交触发。
+  V3 quirk 补全实验：在 /storage/.config/ 手动设置
+     MALI_WAYLAND_AFBC=0 并确认 devfreq 路径存在，重启比对截图；
+     若从「载入中」前进到有画面，说明 R2-2 也是必要项。
+  V4 回归基线：切回 gpu.driver=panfrost 并重启，确认前端能起（已知
+     板级结论），以排除系统层/存储层退化。
+
+四、处理建议
+  S2-1 首要动作是把 libmali 与 kbase 配成同一 DDK 版本，再谈启用
+       libmali 可选值。在此之前按 26e07ee61c 的既定口径：出厂默认
+       panfrost，libmali 仅声明性可选，不要作为首启默认。
+  S2-2 版本对齐前不要反复切换尝试 —— 每次切换只改下次开机状态且
+       本盘已出现 2056 次 GPU fault，无收益。
+  S2-3 版本对齐后按 plan v2 第八节补齐 A311D 分流的 quirk，再执行
+       阶段 2 验收：EGL/GBM 初始化、帧率与渲染路径、lsmod 互斥、
+       ICD mask、连续冷启动稳定性；这些不能由静态检查替代。
+  S2-4 若版本对齐后仍卡载入中且证据指向节点形态，才启动 plan v2
+       的最后备选（双节点 DTB/引导链改造），并以原 54,984 B dtb.img
+       为默认回退分支。
+
+================================================================================
+共同结论与状态口径
+================================================================================
+  1. 两个现象分属不同层：绿屏在 panfrost 支，是显示/渲染通路问题；
+     卡「载入中」在 libmali 支，首要原因是 DDK 版本不匹配导致的
+     GPU 指令级 fault。不要用同一个「驱动坏了」结论覆盖两者。
+  2. 当前设备处于 libmali 模式且前端被 2056 次 INSTR_INVALID_ENC
+     卡住，这不是「系统正常但慢」；panfrost 支未在本轮采集时启用，
+     绿屏相关判断全部为基于修改前后差异的推断，需切换后实证。
+  3. 本轮只做只读采集与源码/历史差异分析，未改设备配置、未切换驱动、
+     未重建镜像、未刷盘；所有验证思路均为待执行。
+================================================================================
