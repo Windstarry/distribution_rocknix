@@ -2049,6 +2049,44 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
      (对齐 r51p0 内核 DDK 或整套同版 DDK) 仍是唯一根治方向，均未执行。
 
 ================================================================================
+第二十八节  2026-11-21 10:20 F1 路线 A 执行：ARM 官方 r51p0 kernel DDK 配平
+--------------------------------------------------------------------------------
+完整报告：tools/a311d_f1_route_a_r51p0_kernel_ddk_20261121.txt。
+性质：源码改动 + 真实 aarch64 交叉编译验证；未刷盘、未上电、未构建完整镜像。
+28.1 改动（已落盘）：
+  - mali-bifrost/package.mk 新增 S922X|A311D 独立 case（RK3326 之前）：
+    PKG_VERSION=r51p0-00eac0；PKG_URL 指向 ARM 官方 mali-bifrost-gpu/
+    BX304L01B-SW-99002-r51p0-00eac0.tar（非 RK3326S 的 VX504X08X）；
+    PKG_SHA256=e991b106...(真实 64 位，早前误填 MD5 已修正)；
+    PKG_PATCH_DIRS+=" 6.18"。仿 RK3326S r52p0 先例。
+  - make_target 未改（A311D/S922X 仍 meson 平台，编译验证通过）；
+    makeinstall_target 未改（DRIVER_DIR 路径与 strip-components=1 后吻合）。
+  - 新建 patches/6.18/001-linux-6.18-compat.patch（197 行 / 6 文件），
+    patch -p1 --dry-run 全通过。
+28.2 官方源码校验：HTTP 200，MD5 实测=官方 3a7b1235...eb3，SHA256
+    e991b106...bfa5；用户名态 libmali 内嵌 Bifrost-r51p0-00eac0。
+28.3 补丁 6 类改动（逐项由真实编译错误驱动）：Kbuild src 用 KBUILD_EXTMOD
+    作基准(6.18 改 $(src))；platform_device.remove 改 void；删 FMODE_UNSIGNED_OFFSET；
+    __SetPageMovable→SetPageMovableOps 且 __ClearPageMovable 全删(6.18 驱动不得清
+    PG_movable_ops)；删 fence_value_str 回调；dma_set_max_seg_size 去 err= 赋值；
+    version_compat_defs.h 补 hrtimer_init/on_stack、del_timer[_sync]、no_llseek
+    兼容宏（KERNEL_VERSION(6,18,0) 闸门，不影响其他内核）。
+28.4 【决定性验证】Docker(aarch64 gcc14) + Linux 6.18.49 完整树真实编译：
+    BUILD_OK，114 个 .o，产出 mali_kbase.ko 6.8MB；ko 内实测
+    "version=r51p0-00eac0 (UK version 11.48)"，与用户态 r51p0 完全配平
+    （对比原 20261101 镜像 r54p2-02eac0 UK11.46）。modpost 末段 unresolved
+    系 modules_prepare 无 Module.symvers 的验证环境限制，KBUILD_MODPOST_WARN=1
+    闭环，C 编译错误为 0。
+28.5 影响：仅 libmali 模式受益（kbase 只在该分支加载）；panfrost、gpudriver
+    切换、DTS、引导链、config.ini 均未改。S922X 6.18.21 / A311D 6.18.49 同属
+    6.18 系列，补丁闸门覆盖两者，已在 6.18.49 实测。
+28.6 未执行/待确认：未构建完整镜像、未刷盘、未上电；配平后 0x51 归零与
+    ES 进主界面须走 R26 的 V1 实机流程；不得据本节声称故障已消除。
+28.7 本节为 F1 路线 A 最新状态；此前"DDK 无法配平/不具备 libmali 条件"
+    （第二十六节）为引入官方 r51p0 内核 DDK 之前的结论，现已被本节的代码
+    落地 + 编译配平证据更新，但板级有效性仍待实机验证。
+
+================================================================================
 本文所有结论均带证据分级；[未执行] 项不得在后续汇报中写成已完成。
 第一~九节已按 11-11 23:15 状态收敛；第十~十四节为 11-11 22:00 ~ 11-12 08:45
 的按时间顺序补记；第十五~十八节为 11-12 19:14 ~ 20:14 补记；
@@ -2068,4 +2106,7 @@ GPU/主题当前状态以第二十五节为准，第二十四节保留为原因�
 第二十七节为 2026-11-21 16:05 上游 next 分支核查 + 20261101 官方镜像 libmali
 实现只读验证，新增"官方镜像出厂即 r51p0 用户态 / r54p2 内核态不配平"铁证；
 libmali 可用性结论仍以第二十六节为准，本节为其补充上游镜像侧直接证据。
+第二十八节为 2026-11-21 10:20 F1 路线 A 执行（ARM 官方 r51p0 kernel DDK +
+6.18 兼容补丁），已真实编译产出 r51p0 kbase 实现 DDK 配平；libmali 修复
+进展以本节为准，但板级有效性仍待实机验证，不得声称故障已消除。
 ================================================================================

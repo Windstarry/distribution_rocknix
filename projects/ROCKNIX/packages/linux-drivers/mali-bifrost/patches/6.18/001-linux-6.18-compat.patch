@@ -1,0 +1,197 @@
+--- a/product/kernel/drivers/gpu/arm/midgard/Kbuild
++++ b/product/kernel/drivers/gpu/arm/midgard/Kbuild
+@@ -20,7 +20,7 @@
+ 
+ # make $(src) as absolute path if it is not already, by prefixing $(srctree)
+ # This is to prevent any build issue due to wrong path.
+-src:=$(if $(patsubst /%,,$(src)),$(srctree)/$(src),$(src))
++src:=$(if $(KBUILD_EXTMOD),$(KBUILD_EXTMOD),$(if $(patsubst /%,,src),$(srctree)/src,src))
+ 
+ #
+ # Prevent misuse when Kernel configurations are not present by default
+--- a/product/kernel/drivers/gpu/arm/midgard/mali_kbase_core_linux.c
++++ b/product/kernel/drivers/gpu/arm/midgard/mali_kbase_core_linux.c
+@@ -726,7 +726,6 @@
+ 	}
+ 
+ 	filp->private_data = kfile;
+-	filp->f_mode |= FMODE_UNSIGNED_OFFSET;
+ 
+ 	return 0;
+ 
+@@ -5705,18 +5704,15 @@
+ 	put_device(kbdev->dev);
+ }
+ 
+-static int kbase_platform_device_remove(struct platform_device *pdev)
++static void kbase_platform_device_remove(struct platform_device *pdev)
+ {
+ 	struct kbase_device *kbdev = to_kbase_device(&pdev->dev);
+ 
+-	if (!kbdev)
+-		return -ENODEV;
+ 
+ 	kbase_device_term(kbdev);
+ 	dev_set_drvdata(kbdev->dev, NULL);
+ 	kbase_device_free(kbdev);
+ 
+-	return 0;
+ }
+ 
+ void kbase_backend_devfreq_term(struct kbase_device *kbdev)
+--- a/product/kernel/drivers/gpu/arm/midgard/mali_kbase_mem_migrate.c
++++ b/product/kernel/drivers/gpu/arm/midgard/mali_kbase_mem_migrate.c
+@@ -88,7 +88,7 @@
+ 
+ 	lock_page(p);
+ #if (KERNEL_VERSION(6, 0, 0) <= LINUX_VERSION_CODE)
+-	__SetPageMovable(p, &movable_ops);
++	SetPageMovableOps(p);
+ 	page_md->status = PAGE_MOVABLE_SET(page_md->status);
+ #else
+ 	/* In some corner cases, the driver may attempt to allocate memory pages
+@@ -109,7 +109,7 @@
+ 	 * gain the movable property later on in their life cycle.
+ 	 */
+ 	if (kbdev->mem_migrate.inode && kbdev->mem_migrate.inode->i_mapping) {
+-		__SetPageMovable(p, kbdev->mem_migrate.inode->i_mapping);
++		SetPageMovableOps(p);
+ 		page_md->status = PAGE_MOVABLE_SET(page_md->status);
+ 	}
+ #endif
+@@ -163,7 +163,6 @@
+ 		lock_page(p);
+ 		page_md = kbase_page_private(p);
+ 		if (page_md && IS_PAGE_MOVABLE(page_md->status)) {
+-			__ClearPageMovable(p);
+ 			page_md->status = PAGE_MOVABLE_CLEAR(page_md->status);
+ 		}
+ 		unlock_page(p);
+@@ -233,16 +232,15 @@
+ 
+ 	if (ret == 0) {
+ 		dma_unmap_page(kbdev->dev, old_dma_addr, PAGE_SIZE, DMA_BIDIRECTIONAL);
+-		__ClearPageMovable(old_page);
+ 		ClearPagePrivate(old_page);
+ 		put_page(old_page);
+ 
+ #if (KERNEL_VERSION(6, 0, 0) <= LINUX_VERSION_CODE)
+-		__SetPageMovable(new_page, &movable_ops);
++		SetPageMovableOps(new_page);
+ 		page_md->status = PAGE_MOVABLE_SET(page_md->status);
+ #else
+ 		if (kbdev->mem_migrate.inode->i_mapping) {
+-			__SetPageMovable(new_page, kbdev->mem_migrate.inode->i_mapping);
++			SetPageMovableOps(new_page);
+ 			page_md->status = PAGE_MOVABLE_SET(page_md->status);
+ 		}
+ #endif
+@@ -311,16 +309,15 @@
+ 
+ 		/* Clear PG_movable from the old page and release reference. */
+ 		ClearPagePrivate(old_page);
+-		__ClearPageMovable(old_page);
+ 		put_page(old_page);
+ 
+ 		/* Set PG_movable to the new page. */
+ #if (KERNEL_VERSION(6, 0, 0) <= LINUX_VERSION_CODE)
+-		__SetPageMovable(new_page, &movable_ops);
++		SetPageMovableOps(new_page);
+ 		page_md->status = PAGE_MOVABLE_SET(page_md->status);
+ #else
+ 		if (kctx->kbdev->mem_migrate.inode->i_mapping) {
+-			__SetPageMovable(new_page, kctx->kbdev->mem_migrate.inode->i_mapping);
++			SetPageMovableOps(new_page);
+ 			page_md->status = PAGE_MOVABLE_SET(page_md->status);
+ 		}
+ #endif
+@@ -392,7 +389,6 @@
+ 		break;
+ 	case NOT_MOVABLE:
+ 		/* Opportunistically clear the movable property for these pages */
+-		__ClearPageMovable(p);
+ 		page_md->status = PAGE_MOVABLE_CLEAR(page_md->status);
+ 		break;
+ 	default:
+@@ -515,7 +511,6 @@
+ 		struct kbase_mem_migrate *mem_migrate = &kbdev->mem_migrate;
+ 
+ 		kbase_free_page_metadata(kbdev, old_page, NULL);
+-		__ClearPageMovable(old_page);
+ 		put_page(old_page);
+ 
+ 		/* Just free new page to avoid lock contention. */
+@@ -538,7 +533,6 @@
+ 	 * expect.
+ 	 */
+ 	if (err < 0 && err != -EAGAIN) {
+-		__ClearPageMovable(old_page);
+ 		page_md->status = PAGE_MOVABLE_CLEAR(page_md->status);
+ 	}
+ 
+@@ -614,7 +608,6 @@
+ 	 */
+ 	if (status_mem_pool || status_free_isolated_in_progress ||
+ 	    status_free_pt_isolated_in_progress) {
+-		__ClearPageMovable(p);
+ 		page_md->status = PAGE_MOVABLE_CLEAR(page_md->status);
+ 		if (!WARN_ON_ONCE(!kbdev)) {
+ 			struct kbase_mem_migrate *mem_migrate = &kbdev->mem_migrate;
+--- a/product/kernel/drivers/gpu/arm/midgard/mali_kbase_fence_ops.c
++++ b/product/kernel/drivers/gpu/arm/midgard/mali_kbase_fence_ops.c
+@@ -80,16 +80,14 @@
+ const struct dma_fence_ops kbase_fence_ops = { .wait = dma_fence_default_wait,
+ 					       .get_driver_name = kbase_fence_get_driver_name,
+ 					       .get_timeline_name = kbase_fence_get_timeline_name,
+-					       .enable_signaling = kbase_fence_enable_signaling,
+-					       .fence_value_str = kbase_fence_fence_value_str,
++					       .enable_signaling = kbase_fence_enable_signaling };
+ 					       .release = kbase_fence_release };
+ #else
+ extern const struct dma_fence_ops kbase_fence_ops; /* silence checker warning */
+ const struct dma_fence_ops kbase_fence_ops = { .wait = dma_fence_default_wait,
+ 					       .get_driver_name = kbase_fence_get_driver_name,
+ 					       .get_timeline_name = kbase_fence_get_timeline_name,
+-					       .enable_signaling = kbase_fence_enable_signaling,
+-					       .fence_value_str = kbase_fence_fence_value_str };
++					       .enable_signaling = kbase_fence_enable_signaling };
+ #endif /* MALI_USE_CSF */
+ 
+ KBASE_EXPORT_TEST_API(kbase_fence_ops);
+--- a/product/kernel/drivers/gpu/arm/midgard/device/mali_kbase_device.c
++++ b/product/kernel/drivers/gpu/arm/midgard/device/mali_kbase_device.c
+@@ -308,7 +308,7 @@
+ 
+ 	/* There is no limit for Mali, so set to max. */
+ 	if (kbdev->dev->dma_parms)
+-		err = dma_set_max_seg_size(kbdev->dev, UINT_MAX);
++		dma_set_max_seg_size(kbdev->dev, UINT_MAX);
+ 	if (err)
+ 		goto dma_set_mask_failed;
+ 
+--- a/product/kernel/include/linux/version_compat_defs.h
++++ b/product/kernel/include/linux/version_compat_defs.h
+@@ -670,4 +670,23 @@
+ #include <linux/kernel.h>
+ #endif
+ 
++/* Linux 6.18 compatibility for ARM r51p0 DDK (A311D/S922X). */
++#if KERNEL_VERSION(6, 18, 0) <= LINUX_VERSION_CODE
++#ifndef hrtimer_init
++#define hrtimer_init(timer, clock_id, mode) hrtimer_setup((timer), NULL, (clock_id), (mode))
++#endif
++#ifndef hrtimer_init_on_stack
++#define hrtimer_init_on_stack(timer, clock_id, mode) hrtimer_setup_on_stack((timer), NULL, (clock_id), (mode))
++#endif
++#ifndef del_timer
++#define del_timer(timer) timer_delete(timer)
++#endif
++#ifndef del_timer_sync
++#define del_timer_sync(timer) timer_delete_sync(timer)
++#endif
++#endif
++#ifndef no_llseek
++#define no_llseek noop_llseek
++#endif
++
+ #endif /* _VERSION_COMPAT_DEFS_H_ */

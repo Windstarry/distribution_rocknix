@@ -9,6 +9,20 @@ PKG_TOOLCHAIN="manual"
 PKG_IS_KERNEL_PKG="yes"
 
 case ${DEVICE} in
+  S922X|A311D)
+  # Match the only available userspace blob (libmali-meson-r51p0-wayland-gbm.so,
+  # "Bifrost-r51p0-00eac0") with an official ARM r51p0 kernel DDK. The
+  # ROCKNIX/mali_kbase tree starts at r54p1 and never carried r51p0, so the
+  # previous default branch produced r54p2 kbase against r51p0 userspace —
+  # the DDK mismatch behind GPU fault 0x51 INSTR_INVALID_ENC.
+  # Follow the RK3326S r52p0 precedent: official developer.arm.com tarball
+  # plus a device-kernel-version patch directory for 6.18 (patches/6.18).
+  PKG_VERSION="r51p0-00eac0"
+  # SHA256 of official BX304L01B-SW-99002-r51p0-00eac0.tar (MD5 3a7b123518fff2bf33745cda46ec5eb3)
+  PKG_SHA256="e991b10682df586b0c5569ced846206ce5d8869a91e2a04544d2cff99b26bfa5"
+  PKG_URL="https://developer.arm.com/-/media/Files/downloads/mali-drivers/kernel/mali-bifrost-gpu/BX304L01B-SW-99002-${PKG_VERSION}.tar"
+  PKG_PATCH_DIRS+=" 6.18"
+  ;;
   RK3326)
   PKG_VERSION="39da994bb6fc8819e5e8c1873907dd21d17e53c1"
   PKG_SHA256="f947b99a1bcb5b86ea270c1ce4cd189f4df26b3c0c8ba92c1ef256bb757afa66"

@@ -1,0 +1,117 @@
+================================================================================
+F1 路线 A 执行报告：ARM 官方 r51p0 kernel DDK 配平 + Linux 6.18 兼容补丁
+执行时间：2026-11-21 10:20 (北京时间)
+目标：把 A311D/S922X 的 mali_kbase 从 r54p2 降到 r51p0，与唯一可用的
+      r51p0 用户态 libmali 配平，根治 GPU fault 0x51 INSTR_INVALID_ENC。
+性质：源码改动 + 真实交叉编译验证；未刷盘、未改设备、未构建完整镜像。
+================================================================================
+
+一、改动清单（已落盘）
+--------------------------------------------------------------------------------
+1.1 projects/ROCKNIX/packages/linux-drivers/mali-bifrost/package.mk
+    - 新增 S922X|A311D 独立 case（置于 RK3326 之前）：
+        PKG_VERSION="r51p0-00eac0"
+        PKG_SHA256="e991b10682df586b0c5569ced846206ce5d8869a91e2a04544d2cff99b26bfa5"
+        PKG_URL=".../mali-bifrost-gpu/BX304L01B-SW-99002-${PKG_VERSION}.tar"
+        PKG_PATCH_DIRS+=" 6.18"
+      仿 RK3326S r52p0 先例：官方 developer.arm.com 直链 + 版本补丁目录。
+    - make_target 未改：A311D/S922X 仍用 CONFIG_MALI_PLATFORM_NAME=meson
+      （真实编译验证用的就是 meson，通过）。
+    - makeinstall_target 未改：DRIVER_DIR 仍为 product/kernel/.../midgard，
+      官方 tar 经 scripts/extract --strip-components=1 剥离 driver/ 后路径吻合。
+1.2 projects/ROCKNIX/packages/linux-drivers/mali-bifrost/patches/6.18/
+    001-linux-6.18-compat.patch（新建，197 行，6 个文件）
+    由 pristine r51p0 源码与已编译通过的树 diff 生成，patch -p1 --dry-run 通过。
+
+二、ARM 官方源码获取与校验
+--------------------------------------------------------------------------------
+2.1 下载地址（实测 HTTP 200）：
+    https://developer.arm.com/-/media/Files/downloads/mali-drivers/kernel/
+    mali-bifrost-gpu/BX304L01B-SW-99002-r51p0-00eac0.tar
+    注意：是 Bifrost 的 BX304L01B 前缀，不是 RK3326S(Valhall) 的 VX504X08X。
+2.2 官方页面标注：2024-08-14，6.6 MiB，MD5 3a7b123518fff2bf33745cda46ec5eb3。
+2.3 实下载 6,948,xxx 字节，MD5 实测 = 官方值（完全一致）；
+    SHA256 实测 = e991b10682df586b0c5569ced846206ce5d8869a91e2a04544d2cff99b26bfa5
+    （已写入 PKG_SHA256）。
+2.4 用户名态对照：libmali.so.1.9.0 内嵌 "Bifrost-r51p0-00eac0"；
+    符号链 libmali-meson-r51p0-wayland-gbm.so → libmali.so.1（20261101 镜像实证）。
+
+三、Linux 6.18 兼容补丁内容（逐项均由真实编译错误驱动，非猜测）
+--------------------------------------------------------------------------------
+目标内核：A311D 用 6.18.49（linux/package.mk 单独 case），S922X 用 6.18.21；
+补丁以 KERNEL_VERSION(6,18,0) 为闸门，对 6.12 等其他内核无影响。
+
+3.1 Kbuild（src 路径）：6.18 改变 out-of-tree 的 $(src) 解析，原公式拼出
+    /work/linux-6.18.49/././arbiter/Kbuild（内核树而非模块树）导致
+    "No rule to make target"。改为优先用 $(KBUILD_EXTMOD) 作绝对基准。
+3.2 mali_kbase_core_linux.c：
+    - platform_driver.remove 在 6.18 是 void(*)，原 int 函数签名不兼容；
+      改为 static void，删掉 if(!kbdev)return -ENODEV 与尾部 return 0。
+    - FMODE_UNSIGNED_OFFSET 已移除，删除该赋值行。
+3.3 mali_kbase_mem_migrate.c：page migration API 在 6.18 更名：
+    - __SetPageMovable(p,&ops) → SetPageMovableOps(p)（6 处）
+    - __ClearPageMovable() 全部删除：6.18 明确 PG_movable_ops 只能由内核
+      free 时清除，驱动不得清除（page-flags.h 注释原文）。
+3.4 mali_kbase_fence_ops.c：dma_fence_ops.fence_value_str 回调在 6.18 移除；
+    两处初始化删除，结构体正确闭合。
+3.5 device/mali_kbase_device.c：dma_set_max_seg_size 在 6.18 返回 void；
+    去掉 `err = ` 赋值（原 err=void 报 "void value not ignored"）。
+3.6 version_compat_defs.h（末尾追加 shim，KERNEL_VERSION>=6.18 闸门）：
+    - hrtimer_init → hrtimer_setup(t,NULL,clock,mode)（源码随后手动赋
+      timer->function，编译验证语义等价）
+    - hrtimer_init_on_stack → hrtimer_setup_on_stack(t,NULL,...)
+    - del_timer → timer_delete；del_timer_sync → timer_delete_sync
+    - no_llseek → noop_llseek（无版本闸门，仅当未定义时生效）
+
+四、真实交叉编译验证（决定性证据）
+--------------------------------------------------------------------------------
+4.1 环境：Docker mali-verify:trixie（Debian trixie + aarch64-linux-gnu-gcc
+    14.2），源码 Linux 6.18.49 完整树 + ARM r51p0 DDK，ARCH=arm64。
+4.2 过程：从 pristine tar 解包 → apply_618.sh 应用补丁 → kernel make 编译
+    CONFIG_MALI_MIDGARD=m CONFIG_MALI_PLATFORM_NAME=meson CONFIG_MALI_REAL_HW=y
+    CONFIG_MALI_DEVFREQ=y CONFIG_MALI_GATOR_SUPPORT=y。
+4.3 逐轮修正共解决 12 类 6.18 API 不兼容（Kbuild 路径、remove 签名、
+    FMODE、PageMovable×2、fence_value_str、dma_set_max_seg_size、
+    hrtimer_init、hrtimer_init_on_stack、del_timer、del_timer_sync、no_llseek）。
+4.4 结果：BUILD_OK，114 个 .o，产出 mali_kbase.ko 6.8 MiB。
+4.5 从产出的 ko 实测版本串：
+    version=r51p0-00eac0 (UK version 11.48)
+    → 与用户态 Bifrost-r51p0-00eac0 完全配平（对比原镜像 r54p2-02eac0 UK11.46）。
+4.6 说明：验证末段 modpost 因 modules_prepare 无完整 Module.symvers 报
+    unresolved symbol（连 mali 自身符号都报），属验证环境限制；以
+    KBUILD_MODPOST_WARN=1 完成链接闭环，C 编译错误为 0。真实 ROCKNIX
+    kernel_make 先完整编内核再编外部模块，不存在该问题。
+
+五、静态验证
+--------------------------------------------------------------------------------
+5.1 bash -n package.mk：通过。
+5.2 各设备 case 展开：仅 A311D/S922X 命中 r51p0 + " 6.18"，其他设备不变。
+5.3 PKG_SHA256 为真实 64 位 SHA256（已修正早前误填的 MD5 值）。
+5.4 补丁 patch -p1 --dry-run：6 个文件全部 OK。
+5.5 补丁以 KERNEL_VERSION(6,18,0) 为闸门，不影响 6.12-LTS 等其他内核包。
+
+六、影响范围与风险
+--------------------------------------------------------------------------------
+6.1 受益：A311D/S922X 的 libmali 模式从"出厂即 DDK 错配"变为配平，
+    理论上消除 r51p0 shader 交 r54p2 kbase 执行导致的 0x51 fault。
+6.2 不变：panfrost 模式完全不受影响（mali_kbase.ko 只在 libmali 分支加载）；
+    gpudriver 切换逻辑、DTS、引导链、config.ini 均未改。
+6.3 覆盖范围：S922X 内核为 6.18.21，A311D 为 6.18.49，同属 6.18 系列，
+    补丁闸门 KERNEL_VERSION(6,18,0) 覆盖两者；已在 6.18.49 实测。
+6.4 未执行/待板级确认：
+    - 未构建完整 ROCKNIX 镜像、未刷盘、未上电；
+    - 配平后 0x51 是否归零、ES 是否进主界面须实机验证（R26 流程 V1）；
+    - 本次仅验证内核模块编译，未验证 G52 上运行 r51p0 shader 的最终画面。
+6.5 回滚：还原 package.mk 的 S922X|A311D case 并删除 patches/6.18/ 即可。
+
+七、下一步（建议，未执行）
+--------------------------------------------------------------------------------
+7.1 CI 重建 A311D/S922X 镜像，确认 gpudriver --start 加载新 mali_kbase.ko
+    且 modinfo version=r51p0-00eac0。
+7.2 实机切 libmali 重启，清 dmesg 观察 15min：0x51 计数须为 0、ES 进主界面。
+7.3 若仍有 fault，转 F2（g24p0/valhall r24p0 整套替换）或 strace ioctl 定位。
+
+================================================================================
+结论：F1 路线 A 的代码改动已完成并通过真实交叉编译验证（产出 r51p0 kbase，
+DDK 与用户态配平）。板级效果待 CI 重建 + 实机验证，不得据本报告声称故障已消除。
+================================================================================
