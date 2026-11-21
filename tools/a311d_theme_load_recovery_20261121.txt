@@ -1,0 +1,114 @@
+================================================================================
+A311D 前端主题「载入中/正在加载主题」交替闪烁 —— 让主题先加载
+日期：2026-11-21 14:40~15:02（北京时间 GMT+8）
+设备：192.168.31.7 / root / rocknix；ROCKNIX A311D，内核 6.18.49
+镜像：AURKNIX-image-A311D-20261113（BUILD_ID 26e07ee61c，双栈切换版）
+性质：设备运行时配置切换 + 冷启动复核；未重建、未刷盘、未改仓库源码
+================================================================================
+
+一、目标与结论
+--------------------------------------------------------------------------------
+目标：先让前端主题渲染出来（用户接受暂时牺牲 GPU 加速），不追求 libmali
+      本身的可用性。
+结论 [板级实证]：已达成。把 gpu.driver 从 libmali 切回 panfrost 并重启后，
+      EmulationStation 主题（art-book-next）完整加载、中文提示栏清晰、
+      无绿屏、无缺字；GPU fault 计数由 2056 归零。切换前的配置已备份，
+      可随时回滚。
+
+说明：先前报告的「panfrost 绿屏」现象在本轮未复现。本轮实证为「当前这块
+      盘 + 20261113 镜像 + panfrost」组合下主题正常且无绿屏；
+      绿屏的触发条件仍未定性，不得据此写「panfrost 绿屏已修复」。
+
+二、为什么走 panfrost（而不是继续修 libmali 或走软件渲染）
+--------------------------------------------------------------------------------
+1. libmali 支已被实证为 DDK 硬不匹配：内核 mali_kbase r54p2-02eac0 对
+   libmali.so.1.9.0 内嵌 r51p0-00eac0，2056 次 GPU fault 0x51
+   INSTR_INVALID_ENC，且 ES 硬链接 libmali-hook.so.1（DT_NEEDED，
+   纯转发到 libmali.so.1，无软件回退），环境变量无法绕开。
+   → 版本配平需重建 libmali 或内核，不是「先让主题加载」的快捷路径。
+2. Mesa 软件渲染（swrast/llvmpipe）看似可选（libEGL_mesa.so.0.0.0、
+   libdril_dri.so 均在盘），但 libEGL.so.1.1.0 / libGLESv2.so.2.1.0
+   被 /dev/loop0 bind mount 成 libmali 垫片，且 ES 直接链接 libmali-hook，
+   只靠 LIBGL_ALWAYS_SOFTWARE 之类变量无法让 ES 改走 Mesa。
+3. panfrost 是双栈方案 v2 的阶段 1 基线，回退路径明确（改回设置 + 重启），
+   切换机制 gpudriver --start 已在原镜像验证过。
+   → 选它作为「先让主题加载」的最短路径。
+
+三、切换前状态（只读采集）
+--------------------------------------------------------------------------------
+  gpu.driver                 = libmali（system.cfg:112）
+  lsmod                      = mali_kbase 在，panfrost 不在
+  /dev/dri                   = card0（meson HDMI）/ card1 + renderD128（etnaviv）
+  libEGL.so.1.1.0            = 131,849 B，squashfs loop bind（libmali 垫片）
+  libGLESv2.so.2.1.0         = 131,849 B，同上
+  libGL.so.1.7.0             = /dev/null bind（字符设备，被屏蔽）
+  panfrost_icd.*.json        = /dev/null bind（被屏蔽）
+  ES 进程                    = PID 1980，存活 24 分钟未重启（非 crash loop）
+  ES 日志                    = 主题 XML 已解析完（01:13:25 的 system 列表/
+                               theme 告警），说明卡在渲染提交而非主题解析
+  /var/log/es_log.txt        = 251 B（被一次 --version 探测覆盖，属采集副作用）
+  GPU fault                  = 2056，且不再增长（前端停止提交）
+  A311D quirk 目录           = 仅 090-ui_service；缺 S922X-BOX 的
+                               041-panfrost(PAN_MESA_DEBUG=forcepack) 等
+
+四、执行步骤（可回滚）
+--------------------------------------------------------------------------------
+  1. 备份：
+     mkdir -p /storage/_gpu_backup
+     cp -a /storage/.config/system/configs/system.cfg \
+           /storage/_gpu_backup/system.cfg.before-panfrost
+     （备份文件 9019 B，mtime 01:13）
+  2. 改设置：
+     sed -i 's/^gpu.driver=.*/gpu.driver=panfrost/' \
+           /storage/.config/system/configs/system.cfg
+     → 112:gpu.driver=panfrost；sync
+  3. 冷启动：
+     systemctl reboot --no-block；18 s 后 SSH 断开，32 s 后恢复
+  4. gpudriver --start 在启动时自动完成：
+     modprobe -r mali_kbase；modprobe panfrost；
+     umount libmali 的 libEGL/libGLES/libgbm bind mounts；
+     恢复 libGL 与 panfrost Vulkan ICD、屏蔽 mali.json
+
+五、切换后实证
+--------------------------------------------------------------------------------
+  gpu.driver                 = panfrost（system.cfg:112）
+  lsmod                      = panfrost 81920 9；drm_shmem_helper 1 panfrost；
+                               mali_kbase 已卸载
+  libmali bind mounts        = 全部消失（mount 查 libEGL/libGLES/libgbm/libGL
+                               无输出）
+  /dev/dri                   = card0/1/2 + renderD128/129 齐备
+  renderD128 driver          =仍是 etnaviv（NPU 节点，与主题渲染无关）
+  ES 日志                    = 重新解析完成，mtime 02:00:00，14547 B
+  ES 进程                    = PID 1921；冷启动 2 分 20 秒后仍存活（Sl）
+  GPU fault                  = 0（切换前 2056）
+  dmesg                      = 仅一条
+                               [12.97] panfrost ffe40000.gpu: error -ENODEV:
+                               _opp_set_regulators: no regulator (mali) found
+                               —— panfrost 用固定电压，该告警不影响渲染
+  截图 1（切换后约 1 分钟）   = tools/a311d_ui_panfrost_loaded_20261121.png
+  截图 2（再等 45 s）         = 与截图 1 完全一致，主题稳定无卡死
+  画面内容                   = art-book-next 主题，当前系统 PICO-8，
+                               像素游戏插图完整；底部「菜单 / 导航栏 /
+                               随机 / 选择」清晰中文；无绿屏、无方框缺字
+
+六、回滚方式
+--------------------------------------------------------------------------------
+  cp -a /storage/_gpu_backup/system.cfg.before-panfrost \
+        /storage/.config/system/configs/system.cfg
+  sync；systemctl reboot --no-block
+  → 回到 libmali（会重新出现 2056 次 GPU fault 与卡载入中，
+    此处仅作可回滚性说明，不建议实际执行，除非要做 DDK 版本配平实验）
+
+七、遗留与后续
+--------------------------------------------------------------------------------
+  [未执行] libmali 支 DDK 版本配平（kbase r54p2 ↔ libmali r51p0），
+           这是让 libmali 可用的唯一决定性验证；配平前不必反复切换。
+  [未执行] panfrost 绿屏触发条件的独立复现与定位；本轮未复现，不能写
+           「绿屏已修复」。
+  [未执行] A311D 缺 041-panfrost 等 quirk 的补齐（PAN_MESA_DEBUG=forcepack
+           等），需在帧率/兼容性实测后再评估。
+  [未执行] 本次切换是设备配置变更，重刷 20261113 镜像后仍回到默认
+           libmali；要把「panfrost 保证主题可加载」固化进镜像，须改构建层
+           默认值或把 26e07ee61c 的默认驱动改回 panfrost。
+  分辨率保持 1920x1080@60（system.display_mode_hdmi，切换不影响）。
+================================================================================
