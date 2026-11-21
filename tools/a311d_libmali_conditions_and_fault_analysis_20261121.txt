@@ -1,0 +1,263 @@
+================================================================================
+A311D 是否具备 libmali 使用条件 —— 代码论证 + GPU fault 0x51 根因定位 + 修复方案
+日期：2026-11-21 15:04~15:20（北京时间 GMT+8）
+范围：基于当前仓库代码（分支 a311d，HEAD a7deffc8c4）+ 上游取证
+性质：只读分析 + 方案输出；本轮未改设备、未改源码、未重建、未刷盘
+================================================================================
+
+证据分级：[代码]＝当前仓库文件可逐行核对；[上游]＝GitHub API/页面取证；
+          [板级]＝前序实机采集（a311d_gpu_stack_fault_triage_20261121.txt）；
+          [推断]＝基于以上的因果判断，未经单一变量复验。
+
+════════════════════════════════════════════════════════════════════════════════
+第一部分  明确结论（先给答案）
+════════════════════════════════════════════════════════════════════════════════
+
+结论 1 —— A311D 当前【不具备】可靠使用 libmali 的条件。
+  不是"代码没接好"，也不是"切换没生效"（切换流程本身正确），而是
+  vendor DDK 的【用户态与内核态版本无法配平】，且这个死锁在仓库与两个
+  上游都无解：
+    * 用户态唯一可用 blob = meson r51p0   [代码+上游双重锁定]
+    * 内核 kbase 可用版本 = r54p1 / r54p2（从无 r51p0）[上游全历史取证]
+    * 二者必须同版本 —— 这是 ARM vendor DDK 的硬约束，非可选。
+  因此 libmali 只能保持"声明性可选值"，不能作为首启默认，更不能在
+  未配平前反复切换尝试。当前 26e07ee61c 的默认 panfrost 口径是正确的。
+
+结论 2 —— GPU fault 0x51 INSTR_INVALID_ENC 的根因 = 用户态 r51p0 编译器
+  产出的着色器/作业指令，交给 r54p2 kbase 驱动的同族 G52 硬件执行时
+  指令解码失败（189s~779s，2056 次），首帧作业永远完不成 → UI 卡在
+  "载入中"。这是【版本错配】,不是切换逻辑缺陷、不是 DTB 节点缺失、
+  不是 panfrost 残留串扰。[板级实证 + 代码锁死 + 上游取证三方印证]
+
+结论 3 —— 由于"升用户态到 r54p2"上游无 blob、"降内核到 r51p0"上游无
+  源码，【不存在纯仓库内的版本配平修复】。可行的修复只有两条，都需要
+  引入当前仓库/上游之外的二进制或做引导链改造，属于重建级动作：
+    路线 A（推荐）：从 ARM 官方引入 r51p0 kernel DDK 源码，按 RK3326S
+      的 r52p0 先例做 6.18 兼容补丁（version_compat_defs.h），
+      与现有 r51p0 用户态配平。
+    路线 B（备选）：改用 Bifrost-G52 开源 blob 栈（libmali-bifrost-g52
+      -g24p0-...）+ 匹配的 mali_valhall/r24p0 内核，彻底绕开 meson r51p0。
+  在此之前的"修复"只能是止血与防呆（见第四部分 F0），不是真正解决。
+
+════════════════════════════════════════════════════════════════════════════════
+第二部分  是否具备 libmali 条件 —— 逐项代码依据
+════════════════════════════════════════════════════════════════════════════════
+
+2.1 决策矩阵（每一项都给文件:行）
+--------------------------------------------------------------------------------
+环节                       状态     代码/上游依据
+--------------------------- -------- -------------------------------------------
+用户态 libmali 打包         具备     packages/graphics/libmali/package.mk:6-16
+  A311D 版本 = r51p0        锁死     :26-29  DRIVER_VERSION="r51p0"
+  上游 blob 唯一            确认     [上游] ROCKNIX/libmali master 的
+                                    aarch64-linux-gnu/ 仅有
+                                    libmali-meson-r51p0-wayland-gbm.so
+                                    （无 r54p2 / 无任何其它 meson 版本）
+  hook 注入                 具备     libmali/package.mk:107-110 patchelf
+内核 kbase 打包             具备     packages/linux-drivers/mali-bifrost/
+                                    package.mk:4-9
+  A311D 默认 PKG_VERSION    锁死     :31-34  422e192b7e3aa3140f34de3...
+                                    [板级] 该树对应 r54p2-02eac0 (UK 11.46)
+  A311D platform=meson      正确     :42-45  S922X|A311D) MALI_PLATFORM=meson
+  上游是否存在 r51p0 内核    否       [上游] ROCKNIX/mali_kbase 全 12 commit：
+                                    root=0267a663 "Bifrost ...r54p1-12eac0"
+                                    → eb2c866 "Sync r54p2-02eac0"
+                                    → ... → 422e192(当前)。无 r51p0。
+内核侧 panfrost 模块        具备     devices/A311D/linux/linux.aarch64.conf
+                                    :3845 CONFIG_DRM_PANFROST=m
+DTS GPU 节点                具备     devices/A311D/linux/dts/amlogic/
+                                    meson-g12b-a311d-cniot-core.dts
+                                    :388-390 &mali(arm,mali-bifrost)=okay；
+                                    :360-379 mali_vulkan(midgard)=disabled。
+                                    单一 bifrost 节点，两栈共用，无需换 DTB。
+切换脚本 gpudriver          具备且    packages/graphics/gpudriver/sources/bin/
+  正确                               gpudriver:46-104 load_driver() 两分支
+                                    对称（模块互斥+库 bind+ICD 互斥）
+  003-gpudriver 冷启动入口   具备     gpudriver/autostart/003-gpudriver:5
+  A311D 无 dtbo carrier     符合     gpudriver/package.mk:31-40 DTB 钩子置空
+libGL / Vulkan ICD 互斥     具备     gpudriver:65-76 / 89-97（mask_file/
+                                    unmask_file 幂等，is_masked:25）
+出厂默认                    正确     rocknix/package.mk:36-43 默认 panfrost
+按驱动分流 quirk            缺失     hardware/quirks/platforms/A311D/ 仅
+                                    090-ui_service；缺 S922X 的 041-panfrost
+                                    (PAN_MESA_DEBUG=forcepack)、010-governors
+                                    (devfreq 按 gpu.driver 分流)、
+                                    MALI_WAYLAND_AFBC=0（libmali direct
+                                    scanout 必需），见 plan v2 第八节。
+构建期 DDK 一致性校验       缺失     tools/a311d_gpu_stack_check.py:51-68
+                                    TC-SYS-08 只查"libEGL.so 存在"，
+                                    无任何 r51p0/r54p2 版本比对项。
+
+2.2 一票否决项：DDK 版本死锁（这是"不具备"的根本原因）
+--------------------------------------------------------------------------------
+  用户态锁 r51p0（libmali/package.mk:27）↔ 内核锁 r54p2
+  （mali-bifrost/package.mk:32，实机报 r54p2-02eac0）。
+  尝试配平的两条路都被上游堵死：
+    (a) 用户态升 r54p2：libmali 上游 aarch64-linux-gnu/ 无 meson r54p2
+        blob，唯一 meson 产物是 r51p0 —— 此路不通。
+    (b) 内核降 r51p0：mali_kbase 上游 root commit 即 r54p1，
+        此后只有 r54p2 及兼容修复，全历史无 r51p0 —— 此路不通。
+  结论：在当前仓库 + 两个现有上游的封闭集合内，DDK 版本【无法配平】。
+  这解释了为什么 26e07ee61c 注释（rocknix/package.mk:26-29）和 plan v2
+  都写"match has not been board-verified / libmali 仅为声明性可选值"。
+
+2.3 一致性判断
+--------------------------------------------------------------------------------
+  齐备：切换骨架、模块打包、DTS 节点、ICD 互斥、出厂默认、1080p60 默认。
+  缺失：DDK 版本配平（决定性）、A311D 按驱动分流 quirk、构建期版本闸门。
+  故：结构就绪 ≠ 功能可用。libmali 在此镜像是"装了但不能用"。
+
+════════════════════════════════════════════════════════════════════════════════
+第三部分  GPU fault 0x51 根因定位 + 两栈切换差异对比
+════════════════════════════════════════════════════════════════════════════════
+
+3.1 故障链（板级实证）
+--------------------------------------------------------------------------------
+  [板级] gpu.driver=libmali；mali_kbase r54p2 加载、panfrost 未加载；
+         /dev/mali0 存在；sway 已映射 libEGL/GLESv2/libmali-hook/libmali
+         → EGL 初始化成功，切换完全生效（排除"切换失败"假说）。
+  [板级] 189s 起 "mali ffe40000.gpu: error detected from slot 1, job
+         status 0x00000051 (INSTR_INVALID_ENC)" / "t6xx: GPU fault 0x51
+         from job slot 0/1"，累计 2056 次，779s 后停止（前端不再提交）。
+  [板级] sway/ES 均处于事件等待（非 D 状态死锁），说明卡在渲染提交结果
+         的获取，而非进程死锁或设备缺失。
+  [代码+上游] 唯一能解释"GPU 取到无法解码的指令"的变量就是 DDK 错配：
+         r51p0 编译器产出的 shader/job 指令 → r54p2 内核提交的 G52 硬件。
+  [推断→已由代码闭合] 根因 = DDK 版本错配，非 DTB、非 quirk、非串扰。
+  说明：故障前缀 "t6xx" 是 ARM kbase 通用的 [板级] 日志标签，不代表芯片
+        真是 t6xx；A311D 是 G52(bifrost)，与报错不矛盾。
+
+3.2 两栈在切换流程/初始化/资源释放/状态同步上的差异（按用户要求对比）
+--------------------------------------------------------------------------------
+  维度          libmali 分支(gpudriver:50-77)      panfrost 分支(:78-98)
+  -----------  ----------------------------------  -----------------------------
+  模块加载      modprobe -r panfrost;              modprobe -r mali_kbase;
+  (初始化)      modprobe mali_kbase                modprobe panfrost
+                → 依赖树外 kbase.ko，需与用户态    → 依赖内核内建 panfrost.ko
+                  DDK 严格同源（唯一强耦合点）       与 mesa 经稳定 UAPI 解耦，
+                                                    无版本同源约束
+  库覆盖        把 /usr/lib/mali/* bind 到         umount 上述 bind（:82/:84）
+  (初始化/       /usr/lib/*（:56），glesonly SDL2  恢复 mesa libEGL/GLES/libgbm
+   资源释放)    覆盖（:59），mask libGL（:65-69）   与 SDL2，unmask libGL（:89-91）
+  Vulkan ICD    unmask mali.json + mask            unmask panfrost_icd + mask
+  (状态同步)    panfrost_icd.*（:71-76）           mali.json（:93-97）
+  幂等/判定     is_masked/mask/unmask（:25-41）， 同左，两分支对称
+                mount 而非 /proc/mounts（squashfs 假阳性规避）
+  副作用窗口    DTB 钩子为空（package.mk:38-39），改设置只落盘，
+  (状态同步)    下次重启才生效；改值当次会话存在"设置值≠运行栈"窗口
+                （plan v2 第二节已指出）—— 两栈共有，非 libmali 独有
+  关键差异结论：
+    * 两分支在【流程、资源释放、状态同步】上是对称、正确的；
+      故障不在切换逻辑。
+    * 唯一实质性差异在【初始化依赖】：libmali 的用户态 blob 与内核
+      kbase 是同一 vendor DDK 编译产物，必须同版本；panfrost 的 mesa
+      userspace 与内核 panfrost.ko 走内核稳定 UAPI，版本松耦合。
+      这正是"同样正确的切换流程，panfrost 能用、libmali 挂"的根因。
+    * 次要差异：A311D 缺 libmali 专属 quirk（devfreq 路径悬空、
+      MALI_WAYLAND_AFBC=0 未设），即使版本配平也可能仍需补齐——
+      但这是次要项，不是 0x51 的成因。
+
+════════════════════════════════════════════════════════════════════════════════
+第四部分  修复方案（按可行性排序，避免无关重构）
+════════════════════════════════════════════════════════════════════════════════
+
+F0【立即止血 / 防呆，纯仓库内，低风险】—— 不是"修复 0x51"，但必须做
+  目标：防止误把 libmali 设为默认而在未配平时卡死；让 checker 暴露版本。
+  F0-1 构建期 DDK 版本一致性闸门（新增检查，不改驱动逻辑）：
+       文件：tools/a311d_gpu_stack_check.py
+       函数：新增 check_ddk_version_consistency(root, report)，
+             在 CHECKS(51-68) 注册 2 项：
+        TC-SYS-11 用户态 meson blob 的 r-version（解析 libmali/package.mk
+                   A311D 的 DRIVER_VERSION，当前 r51p0）
+        TC-SYS-12 内核 kbase 的 r-version（解析 mali-bifrost/package.mk
+                   A311D 的 PKG_VERSION→映射版本串，当前 r54p2）
+        TC-SYS-13 一致性断言：两者必须相等，否则 FAIL 并提示
+                   "libmali NOT usable: DDK mismatch, keep panfrost default"。
+  F0-2 保持出厂默认 panfrost 不变（rocknix/package.mk:40/42 不动），
+       GUI 的 libmali 选项保留但在 checker 未通过前属于"已知不可用"。
+  F0-3 在 rocknix/package.mk:24-35 注释补一行：上游取证结论——
+       libmali 上游无 r54p2 blob、mali_kbase 上游无 r51p0 源码，
+       当前封闭集合内无法配平，避免后来者重复推演"升用户态"死路。
+
+F1【路线 A · 推荐 · 真正的版本配平】—— 需引入仓库外源码 + 重建 + 板级
+  思路：保留现有 r51p0 用户态（唯一可用 blob），把内核 kbase 降到 r51p0。
+  步骤：
+    1. 从 ARM 官方开发者站获取 Bifrost kernel r51p0-00eac0 源码包
+       （形如 BX304L01B-SW-99002-r51p0-00eac0.tar，与用户态同 DDK）。
+       先例：本仓 mali-bifrost/package.mk:17-20 的 RK3326S 分支即采用
+       ARM 官方 DDK tarball + version_compat_defs.h 兼容头。
+    2. 修改 packages/linux-drivers/mali-bifrost/package.mk：
+       新增 A311D 专属 case，PKG_VERSION/PKG_URL 指向 r51p0 官方 tarball，
+       SHA256 实测填入；MALI_PLATFORM 仍为 meson（:43-45 不动）。
+    3. 参照 6.12-LTS/001-fix-building-on-linux-6-12.patch 补 6.18 兼容：
+       remove 回调签名、no_llseek、dma_set_max_seg_size 等；若官方
+       r51p0 缺 6.18 所需 API，移植 version_compat_defs.h 方案。
+    4. 重建 → 板级：gpu.driver=libmali，清 dmesg 后观察 15 分钟内
+       0x51 fault 是否为 0、ES 是否进主界面、连续冷启动是否稳定。
+    5. 通过后再评估把 libmali 提为可选默认值（本轮不建议改默认）。
+  需修改关键文件/函数：
+    packages/linux-drivers/mali-bifrost/package.mk（case 分支 + make_target）
+    packages/linux-drivers/mali-bifrost/patches/6.18/（新建兼容补丁目录）
+    tools/a311d_gpu_stack_check.py（F0-1 的 TC-SYS-11~13）
+
+F2【路线 B · 备选 · 换栈绕开】—— 改动更大，仅在 F1 失败时考虑
+  思路：弃用 meson r51p0 这一支，改用上游现成的 G52 用户态 blob
+  （libmali-bifrost-g52-g24p0-wayland-gbm.so 等）+ 与之匹配的
+  mali_valhall / r24p0 内核栈，两端同源。
+  代价：更换驱动家族、需重新验证 DTS 节点（bifrost/valhall）、
+  Vulkan ICD、direct scanout，风险与工作量均高于 F1，不作为首选。
+
+F3【配套 · 版本配平后才做】—— 补齐 A311D 按驱动分流 quirk
+  packages/hardware/quirks/platforms/A311D/ 新增 041-panfrost、
+  在 090-ui_service 增加 libmali 分支写 MALI_WAYLAND_AFBC=0，
+  评估 010-governors 的 devfreq 路径（bifrost 单节点下
+  ffe40000.gpu_mali_vulkan 悬空，应改用 ffe40000.gpu 或禁用分流）。
+  此项只影响性能与兼容性，不影响 0x51 的成立与否，故排在 F1 之后。
+
+════════════════════════════════════════════════════════════════════════════════
+第五部分  需修改的关键文件与函数 —— 汇总表
+════════════════════════════════════════════════════════════════════════════════
+  文件                                              函数/位置            动作
+  ------------------------------------------------  --------------------  ------
+  tools/a311d_gpu_stack_check.py                    check_system / CHECKS  F0-1 增版本闸门
+  packages/rocknix/package.mk                       makeinstall_target     F0-2/3 保默认+补注释
+  packages/linux-drivers/mali-bifrost/package.mk    case ${DEVICE}         F1-2 A311D→r51p0 官方源
+  packages/linux-drivers/mali-bifrost/package.mk    make_target            F1-2 platform 保持 meson
+  packages/linux-drivers/mali-bifrost/patches/6.18/ （新建）               F1-3 内核兼容补丁
+  packages/hardware/quirks/platforms/A311D/         （新增 quirk 文件）    F3 分流（后置）
+  【不改】gpudriver 脚本与其 package.mk                                   切换逻辑正确，无需动
+  【不改】A311D DTS / 引导链 / config.ini                                  单 bifrost 节点正确
+
+════════════════════════════════════════════════════════════════════════════════
+第六部分  验证方式
+════════════════════════════════════════════════════════════════════════════════
+  V0 静态（本轮即可，F0-1 完成后）：
+     python tools/a311d_gpu_stack_check.py --root <image>  → TC-SYS-11~13
+     应 FAIL（揭示当前 r51p0≠r54p2），作为"当前不具备条件"的机器可读证据。
+  V1 版本对齐决定性实验（F1 重建后，唯一能证明修复的手段）：
+     设备设 gpu.driver=libmali → 重启 → dmesg -c 清零 → 观察 15 min：
+       a) grep -c "GPU fault 0x51" 应为 0（对照：错配时 2056）
+       b) sway get_outputs / grim 截图：ES 进主界面而非"载入中"
+       c) lsmod：mali_kbase 在、panfrost 不在；/dev/mali0 存在
+       d) 连续冷启动 2 次均保持
+  V2 回归基线：切回 panfrost 重启，确认主题仍正常（已知板级结论），
+     证明 F1 未破坏开源栈。
+  V3 若 V1 仍失败：抓 strace -f -e ioctl 挂 emulationstation/sway 看
+     /dev/mali0 ioctl，并读 kbase 的 base_gpu_version；按 fault slot 与
+     shader 来源定位是 compiler 产物还是 job 提交格式，再决定是否转 F2。
+  注意：版本配平前不要反复切换尝试（每次只改下次开机状态，且已产生
+        2056 次 fault，无收益）——延续 26e07ee61c / S2-2 既定口径。
+
+════════════════════════════════════════════════════════════════════════════════
+第七部分  状态口径与红线
+════════════════════════════════════════════════════════════════════════════════
+  * 可写："代码论证显示 DDK 版本无法在当前仓库与两上游内配平，A311D
+          当前不具备可靠使用 libmali 的条件；0x51 根因为 r51p0/r54p2
+          错配；切换逻辑正确，无需重构。"
+  * 禁止写："libmali 已修复""已定位到切换 bug""升级用户态到 r54p2 即可"
+           （上游无该 blob）、"降内核到 r51p0 已可用"（仓库无该源码）。
+  * 当前设备状态：已切回 panfrost、主题正常加载（见
+          a311d_theme_load_recovery_20261121.txt），本轮分析为纯只读，
+          未改变设备状态。
+  * 本轮未修改仓库源码；F0~F3 均为待执行方案，需用户确认后再落地。
+================================================================================
