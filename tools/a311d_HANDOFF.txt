@@ -2013,6 +2013,42 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
   - 红线：配平前不要反复切换尝试（已 2056 fault，无收益）。
 
 ================================================================================
+第二十七节  2026-11-21 16:05 上游分支核查 + 20261101 官方镜像 libmali 实现验证
+--------------------------------------------------------------------------------
+完整报告：tools/a311d_libmali_upstream_image_verify_20261121.txt（只读解包，
+未改镜像/未刷盘/未改源码）。核心结论：
+27.1 上游 github.com/ROCKNIX/distribution 只有一个分支 next（默认+protected），
+     HEAD=21d9dc6（11-20）。本地 upstream remote 是 AveyondFly 派生仓库，非官方。
+     20261101 镜像基线为 11-01 当天 next（内核 7.2.11），早于 11-02 的
+     S922X v7.3.1 与 mali-bifrost cleanup。
+27.2 镜像只读解包：MBR；P1 FAT32 2GiB 卷标 ROCKNIX（KERNEL 27MB + SYSTEM
+     1.377GiB zstd SquashFS + 两个 g12b dtb + driver-gpu-panfrost.dtbo +
+     extlinux.conf），P2 ext4 32MiB 卷标 STORAGE。S922X 走 extlinux+dtbo 链路，
+     与 A311D 的 U-Boot cfgload 单 dtb.img 链路不同。
+27.3 镜像内 libmali 实现：/usr/lib/libmali.so.1.9.0 (57.9MB) +
+     libmali-meson-r51p0-wayland-gbm.so 符号链 + /usr/lib/mali/ 包装库
+     (patchelf 注入 hook 依赖) + mali.json (libmali.so) + OpenCL/GLVND 配置 +
+     mali_csffw.bin；内核 mali_kbase.ko 与 panfrost.ko 共存于 kernel-overlays。
+27.4 切换机制（镜像内 gpudriver 原文）：gpu.driver 默认 libmali；libmali 分支
+     modprobe -r panfrost + modprobe mali_kbase + mount --bind /usr/lib/mali/*
+     覆盖 mesa + /dev/null 屏蔽 libGL 和 panfrost ICD；panfrost 分支反向；
+     显式切换写 dtb_overlay。属"并存+运行期选定"，非编译期单一默认 GL。
+27.5 【本轮新增铁证】镜像 mali_kbase.ko modinfo：
+     version=r54p2-02eac0 (UK 11.46)、K:r54p2-02eac0(GPL)、
+     srcversion=7F9924119D95EDD64CFD158、vermagic=7.2.11；
+     用户态 libmali 为 r51p0。即官方 20261101 S922X 镜像出厂即
+     r51p0 用户态 + r54p2 内核态跨 DDK 组合，与 11-21 实机 0x51 INSTR_INVALID_ENC
+     (2056 次) 同源。构建路径显示复用 mali-bifrost-39da994bb（上游 RK3326/RK3566
+     版本），S922X 无 r51p0 内核 DDK，版本漂移是结构性来源。
+27.6 镜像是上游 S922X 原版 gpudriver（dtb_overlay、无 A311D 特例）；本地
+     a311d 分支 HEAD d63745c717 的 gpudriver 已加 A311D 空 DTB 命令、
+     mask/unmask 对称与 libGL 存在性判断。两者用途不同，DDK 选择策略一致，
+     故第 5 节不配平对两者均成立。修正：镜像里 mali 构建 ID 39da994bb 并非
+     "专用版本"，而是默认分支复用。
+27.7 结论落点：不应用 20261101 镜像论证 libmali 可用；保持 panfrost；F1
+     (对齐 r51p0 内核 DDK 或整套同版 DDK) 仍是唯一根治方向，均未执行。
+
+================================================================================
 本文所有结论均带证据分级；[未执行] 项不得在后续汇报中写成已完成。
 第一~九节已按 11-11 23:15 状态收敛；第十~十四节为 11-11 22:00 ~ 11-12 08:45
 的按时间顺序补记；第十五~十八节为 11-12 19:14 ~ 20:14 补记；
@@ -2029,4 +2065,7 @@ GPU/主题当前状态以第二十五节为准，第二十四节保留为原因�
 第二十六节为 2026-11-21 15:20 libmali 使用条件代码论证 + 0x51 根因 +
 修复方案，libmali 可用性结论以该节为准（当前不具备，DDK 无法配平）；
 与第十六节 16.2 冲突处以 16.5 的修正条目为准。
+第二十七节为 2026-11-21 16:05 上游 next 分支核查 + 20261101 官方镜像 libmali
+实现只读验证，新增"官方镜像出厂即 r51p0 用户态 / r54p2 内核态不配平"铁证；
+libmali 可用性结论仍以第二十六节为准，本节为其补充上游镜像侧直接证据。
 ================================================================================

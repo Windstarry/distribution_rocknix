@@ -1,0 +1,171 @@
+================================================================================
+A311D / S922X 上游分支核查与 20261101 镜像 libmali 实现验证报告
+生成时间：2026-11-21 16:05 (北京时间)
+核查对象：ROCKNIX-S922X.aarch64-20261101.img.gz（本地 E:\A311d）
+核查性质：只读解包验证，未修改镜像、未刷盘、未改源码
+================================================================================
+
+一、上游分支核查结论
+--------------------------------------------------------------------------------
+1.1 仓库 github.com/ROCKNIX/distribution 当前仅有一个分支：next。
+    - 该分支同时是默认分支且受保护（protected=true）。
+    - 当前 HEAD = 21d9dc6759cc3016c2e2e7244574c0e6a5a6bcd8，最近更新 2026-11-20。
+    - 本地仓库 remote=upstream 指向的是 AveyondFly/distribution_rocknix（派生仓库），
+      并非官方 ROCKNIX/distribution；本地 next/a311d 均为该派生的分支。
+
+1.2 2026-11-01 前后官方 next 分支的相关提交（与 GPU 直接相关者）：
+    - 965cf516 linux: S922X: enable SCSI and USB_STORAGE（10-25 提交，11-01 合入 960465af）
+    - 03e7790d Merge PR #3577：mali-bifrost cleanup（11-02，晚于本镜像构建）
+    - 996c03e7 / fe16ca54 linux: S922X: v7.3.1（11-02，晚于本镜像）
+    结论：20261101 镜像构建基线位于 11-01 当天 next，内核为 7.2.11（见第五节），
+    尚未包含 11-02 的 S922X v7.3.1 与 mali-bifrost cleanup。
+
+1.3 官方 next 中存在 libmali、gpudriver、mali-bifrost、libmali-vulkan 包，
+    路径为 projects/ROCKNIX/packages/graphics/{libmali,gpudriver,libmali-vulkan}
+    与 projects/ROCKNIX/packages/linux-drivers/mali-bifrost；根 packages/graphics 下无 libmali。
+
+二、镜像物理结构（只读解析）
+--------------------------------------------------------------------------------
+2.1 文件：ROCKNIX-S922X.aarch64-20261101.img.gz，压缩 1,391,479,212 字节，
+    gzip -t 校验通过；解压后 2,198,863,872 字节（约 2.05 GiB）。
+2.2 MBR 分区表（55 AA 有效）：
+    P1  type=0x0C (FAT32 LBA)  偏移 16 MiB  大小 2.0 GiB，卷标 ROCKNIX
+    P2  type=0x83 (ext4)       偏移 2164260864  大小 32 MiB，卷标 STORAGE
+2.3 P1 根目录关键文件：
+    KERNEL  (27,342,856 B)、SYSTEM  (1,377,800,192 B)
+    meson-g12b-odroid-go-ultra.dtb、meson-g12b-powkiddy-rgb10-max-3-pro.dtb
+    OVERLAYS/driver-gpu-panfrost.dtbo (351 B)、OVERLAYS/gpu-underclock.dtbo (260 B)
+    EXTLINUX/extlinux.conf
+2.4 extlinux.conf 原文：
+    LABEL ROCKNIX / LINUX /KERNEL / FDTDIR /
+    APPEND boot=LABEL=ROCKNIX disk=LABEL=STORAGE quiet console=ttyAML0,115200n8 ...
+    即 S922X 走 extlinux + dtb 目录 + dtbo overlay 的经典链路
+    （与 A311D 的 U-Boot cfgload/chain-boot 单 dtb.img 链路不同，见第六节）。
+2.5 SYSTEM 为 SquashFS 4.0、zstd 压缩（comp=6）、block 1 MiB、
+    bytes_used=1,377,797,549，提取偏移 48,521,216，inode 62,068。已在容器内
+    用 squashfs-tools 4.6.1 只读解包核验。
+
+三、镜像内 libmali 用户态实现（实测文件清单）
+--------------------------------------------------------------------------------
+3.1 核心 blob：
+    /usr/lib/libmali.so.1.9.0              57,945,816 B
+    /usr/lib/libmali.so -> libmali.so.1 -> libmali.so.1.9.0
+    /usr/lib/libmali-meson-r51p0-wayland-gbm.so -> libmali.so.1
+    /usr/lib/libmali-hook.so.1.9.0          134,489 B（hook 库，patchelf 注入依赖）
+    即：meson (Bifrost) 系列、DDK r51p0、Wayland+GBM 平台二进制。
+
+3.2 /usr/lib/mali/ 包装库（供 bind mount 覆盖 mesa 用，均为约 133 KB 的薄封装）：
+    libEGL.so / libEGL.so.1、libGLESv1_CM.so(.1)、libGLESv2.so(.2)、
+    libgbm.so(.1)、libMaliOpenCL.so(.1)。
+    每个都通过 patchelf 追加了对 libmali-hook.so.1 / libmali.so.1 的依赖，
+    与本地 libmali/package.mk 的 post_makeinstall_target 处理一致。
+
+3.3  Vulkan / GLVND / OpenCL 注册：
+    /usr/share/vulkan/icd.d/mali.json  library_path=libmali.so, api_version=1.2.207
+    /usr/share/glvnd/egl_vendor.d/50_mesa.json  library_path=libEGL_mesa.so.0
+    /etc/OpenCL/vendors/mali.icd       libMaliOpenCL.so.1
+    /etc/profile.d/mali-priority.sh    export MALI_SCHED_RT_THREAD_PRIORITY=95
+
+3.4 内核侧：
+    /usr/lib/kernel-overlays/base/lib/modules/7.2.11/mali-bifrost/mali_kbase.ko
+    (1,095,104 B)
+    /usr/lib/kernel-overlays/base/lib/modules/7.2.11/kernel/drivers/gpu/drm/panfrost/panfrost.ko
+    (138,448 B)
+    /usr/lib/kernel-overlays/base/lib/firmware/arm/mali/arch10.8|10.10|10.12|11.8|12.8|13.8/mali_csffw.bin
+    说明两套栈的驱动都以可加载模块形式共存于 kernel-overlays，由切换脚本决定加载谁。
+
+四、切换机制：镜像内 /usr/bin/gpudriver 实测原文要点
+--------------------------------------------------------------------------------
+4.1 配置键 gpu.driver；get_current_driver() 在为空时默认写入 libmali（# DEFAULT）。
+4.2 --options 输出："panfrost libmali"。
+4.3 load_driver libmali：
+    - modprobe -r panfrost；modprobe mali_kbase
+    - mount --bind 将 /usr/lib/mali/* 逐个覆盖到 /usr/lib/ 同名文件
+      （命令形态：find /usr/{lib,lib32}/mali -type f -exec bash -c
+        'lib={}; mount --bind $lib ${lib/\/mali\//\/}' ';'）
+    - 若有 /usr/lib/glesonly 则同样覆盖 /usr/lib/libSDL2*
+    - mount --bind /dev/null /usr/lib/libGL.so 与 /usr/lib32/libGL.so（屏蔽桌面 GL）
+    - 对每个 panfrost ICD 执行 mount --bind /dev/null 屏蔽，保证 Vulkan 只见到 mali
+4.4 load_driver panfrost：反向 umount 上述 bind、恢复 libGL、解屏蔽 panfrost ICD、
+    屏蔽 mali.json；modprobe -r mali_kbase；modprobe panfrost。
+4.5 显式切换命令会改配置并写 DTB overlay：
+    gpudriver libmali  -> dtb_overlay set driver-gpu None
+    gpudriver panfrost -> dtb_overlay set driver-gpu driver-gpu-panfrost.dtbo
+    /usr/bin/dtb_overlay 实测存在（4,144 B）。
+4.6 结论：镜像里的 libmali 不是"编译进系统的默认 GL"，而是"与 panfrost 并存、
+    由用户态脚本用 mount bind + modprobe + ICD 屏蔽在运行期选定的一套用户态 blob+内核模块"。
+
+五、决定性发现：DDK 版本不配平（本轮新增铁证）
+--------------------------------------------------------------------------------
+5.1 镜像内 mali_kbase.ko 的可打印字符串实测：
+    version=r54p2-02eac0 (UK version 11.46)
+    K:r54p2-02eac0(GPL)
+    srcversion=7F9924119D95EDD64CFD158
+    vermagic=7.2.11 SMP preempt mod_unload aarch64
+    构建路径串：.../build.ROCKNIX-S922X.aarch64/build/
+        mali-bifrost-39da994bb6fc8819e5e8c1873907dd21d17e53c1/...
+5.2 用户态 libmali 为 r51p0（第 3.1 节文件名实证）。
+5.3 因此该官方 20261101 S922X 镜像出厂即存在：用户态 r51p0 + 内核态 r54p2 的
+    跨 DDK 组合。这与 2026-11-21 在 A311D 实机观测到的 "GPU fault 0x51
+    INSTR_INVALID_ENC"（189s~779s，2,056 次）以及 libmali 卡"载入中"完全同源：
+    内核 kbase r54p2 的指令编码/API 与 r51p0 用户 blob 不一致，GPU 执行非法指令。
+5.4 注意：构建路径里的 39da994bb... 是上游 mali-bifrost 包中 RK3326/RK3566
+    使用的 PKG_VERSION，S922X/A311D 在无专门 case 时落入默认分支复用它；
+    上游并未为 S922X 固定 r51p0 内核 DDK。这是版本漂移的结构性来源。
+
+六、镜像（上游 next 原版）与本地 a311d 分支的差异
+--------------------------------------------------------------------------------
+6.1 镜像内 gpudriver 为上游原版：DTB 切换用 /usr/bin/dtb_overlay、
+    if [ -z ${CONFDRIVER} ] 未加引号、无 A311D 特例、无 mask_file/unmask_file
+    对称处理、对 /usr/lib32/libGL.so 无条件 bind（不判断文件是否存在）。
+6.2 本地 a311d 分支（HEAD d63745c717）gpudriver 已改造：
+    - A311D case 的 DTB_OVERLAY_LOAD/UNLOAD 置空（chain-boot 无 extlinux/dtbo，
+      切换仅记录设置、下次启动生效，不热切换运行栈）
+    - 增加 is_masked/mask_file/unmask_file、Vulkan ICD 双向对称恢复
+    - libGL 屏蔽改为逐路径判断存在且未屏蔽，避免重复 --start 叠加 bind
+    两者用途不同：镜像是 S922X（extlinux+dtbo）原版，本地分支是 A311D 适配版。
+6.3 本地 a311d 分支 libmali/mali-bifrost 对 A311D 同样设 DRIVER_VERSION=r51p0、
+    MALI_PLATFORM=meson，与官方 next 的 S922X 策略一致；差异只在 gpudriver 的
+    引导链适配，不在 DDK 选择。故第 5 节的 r51p0/r54p2 不配平对两者都成立。
+
+七、libmali 在 ROCKNIX 下的完整实现链路（自构建到运行）
+--------------------------------------------------------------------------------
+    [构建期] libmali/package.mk
+      按 DEVICE 选 DRIVER_VERSION（S922X/A311D=r51p0），按 DISPLAYSERVER 选
+      -wayland-gbm；从 github.com/ROCKNIX/libmali 的 zip 只解出所需 .so/hook/
+      meson/data；meson 以 -Dwrappers=enabled -Dvendor-package=true 构建包装库；
+      patchelf 给 mali 库追加 libmali-hook.so.1 依赖；Vulkan lib 移出 bind 目录。
+    [内核] mali-bifrost/package.mk 从 rocknix/mali_kbase 编 mali_kbase.ko
+      （A311D/S922X 用 MALI_PLATFORM=meson），落入 kernel-overlays。
+    [安装] gpudriver/package.mk 生成 /usr/bin/gpudriver，按设备注入 PAN 名、
+      GPU_OPTIONS 与 DTB overlay 命令（A311D 分支注入空命令）。
+    [启动/运行] gpudriver --start 读 gpu.driver（默认 libmali），用 modprobe
+      切内核模块 + mount --bind 切用户态 GL/GBM/SDL + /dev/null 屏蔽 libGL 与
+      对方 ICD；显式切换命令另写 DTB overlay 以在下次启动生效。
+    [图形栈] 应用链接 /usr/lib/libEGL.so 等，经 mali 包装库 -> libmali-hook ->
+      libmali.so(r51p0) -> mali_kbase.ko(r54p2) -> GPU。
+
+八、验证方法与证据等级
+--------------------------------------------------------------------------------
+8.1 [已验证] gzip 完整性、MBR、FAT32 目录树、extlinux.conf：Python 只读解析。
+8.2 [已验证] SYSTEM SquashFS 解包与文件清单：Docker + squashfs-tools 4.6.1。
+8.3 [已验证] mali_kbase.ko 版本 r54p2-02eac0：Python 提取 ko 内 modinfo 字符串。
+8.4 [已验证] libmali r51p0 wayland-gbm：符号链接指向 + 文件名 + ICD 配置。
+8.5 [已验证] 切换脚本行为：直接从镜像提取 /usr/bin/gpudriver 原文。
+8.6 [关联推断] fault 0x51 与该版本不配平的因果关系：与本会话 11-21 实机
+    dmesg（2,056 次 0x51）及此前代码论证第二十六节一致；本轮补充了"官方
+    20261101 镜像出厂即不配平"的直接证据，但因果关系本体仍为强证据链推断
+    （未做 r51p0 内核 DDK 的对照实验，R26 红线：配平前不反复切换）。
+
+九、风险与建议（不执行，仅方向）
+--------------------------------------------------------------------------------
+9.1 不要用 20261101 官方镜像作为 libmali 可用性依据：其 DDK 组合先天不配平。
+9.2 若坚持 libmali：需为 A311D/S922X 固定与 r51p0 对齐的内核 kbase（当前上游
+    无 r51p0 内核 DDK），或整体换用同版本 DDK 的用户态+内核态；见第二十六节 F1。
+9.3 不改动项：gpudriver 切换逻辑（S922X 与 A311D 各自正确）、DTS、引导链、
+    config.ini；避免无关重构。
+9.4 当前设备建议维持 panfrost（已实测主题正常加载、fault 归零、无绿屏）。
+
+================================================================================
+报告结束。所有"已验证"项均附实测数据来源；推断项已标注证据等级。
+================================================================================
