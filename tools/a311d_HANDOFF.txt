@@ -2087,6 +2087,43 @@ A311D / AURKNIX 移植交接文档（当前状态总览）
     落地 + 编译配平证据更新，但板级有效性仍待实机验证。
 
 ================================================================================
+第二十九节  2026-11-21 20:15 远程构建 mali-bifrost 失败诊断与补丁勘误
+--------------------------------------------------------------------------------
+完整报告：tools/a311d_f1_build_failure_fix_20261121.txt。
+性质：修正第二十八节所提交 6.18 补丁自身的两处缺陷；真实编译验证；
+未刷盘/未上电/未构建完整镜像。
+29.1 现象：远程 CI 在 BUILD mali-bifrost (target) 后 exit 2，用户仅给尾部
+    日志。本轮按 ROCKNIX 真实构建流程（DDK tar --strip-components=1 +
+    包内 sources/Makefile + 仓库补丁 + kernel_make 同参）在本地复现。
+29.2 【根因一】fence_ops.c 原补丁把 .enable_signaling 行尾改成 `};` 提前闭合
+    结构体，其后残留孤立 `.release = ... };`，非法 C；DDK 带 -Werror，
+    编译直接失败。系 apply_618.sh 的 sed 强加 `};` 引入。
+29.3 【根因二·决定性】Linux 6.18 已移除 EXTRA_CFLAGS 处理（内核 Makefile /
+    scripts/Makefile.build grep 零匹配），而 r51p0 DDK midgard/Makefile:299
+    把全部 -DCONFIG_MALI_* 经 EXTRA_CFLAGS 传入 → 6.18 忽略 → 所有配置宏
+    失效 → mali_kbase_defs.h:1204 的 devfreq 字段段消失 → devfreq.c 报
+    30+ 处 has no member（num_opps/devfreq_table/current_nominal_freq 等）。
+    这是 fence_ops 修好后仍 BUILD_FAIL 的原因。
+29.4 排除：命令行 ccflags-y 会覆盖 DDK Kbuild:111 的 `ccflags-y =` 赋值，
+    丢失 -I$(src) 等 include 路径（实测 cache_policy.h not found），已弃用。
+    KCFLAGS 为 6.18 官方通道（Makefile:1137 KBUILD_CFLAGS += $(KCFLAGS)），
+    追加而不覆盖，为最终采用方案。
+29.5 【修复】重写 001-linux-6.18-compat.patch（7 文件/17 hunk，均由 pristine
+    树实测后 diff 自动生成，行号精确）：新增 midgard/Makefile 的 all 目标
+    KCFLAGS="$(EXTRA_CFLAGS)"（保留 EXTRA_CFLAGS 兼容旧内核）；修正
+    fence_ops.c（删 kbase_fence_fence_value_str 静态函数定义 + 两处赋值，
+    CSF 分支保留 .release、非 CSF 分支 .enable_signaling }; 正确闭合）；
+    其余 Kbuild/remove/FMODE/Movable/dma/version_compat 改动不变。
+29.6 【最终验证】干净解包+现补丁+KBUILD_MODPOST_WARN=1：BUILD_OK，error 0，
+    114 对象全编译链接，产出 mali_kbase.ko 7,204,512 字节，内嵌
+    `version=r51p0-00eac0 (UK version 11.48)`、`K:r51p0-00eac0(GPL)`，
+    与用户态 r51p0 完全配平。modpost unresolved warning 系验证树缺完整
+    Module.symvers 的环境限制，真实构建不会出现。patch dry-run 6 文件全过。
+29.7 影响面：仅 6.18 case（S922X|A311D）；RK3326/RK3326S/RK356X 的 6.12-LTS
+    / r52p0 路径不受影响。未构建完整镜像/刷盘/上电；0x51 归零与 ES 进主界面
+    仍须走第二十六节 V1 实机流程，不得声称故障已消除。
+
+================================================================================
 本文所有结论均带证据分级；[未执行] 项不得在后续汇报中写成已完成。
 第一~九节已按 11-11 23:15 状态收敛；第十~十四节为 11-11 22:00 ~ 11-12 08:45
 的按时间顺序补记；第十五~十八节为 11-12 19:14 ~ 20:14 补记；
@@ -2107,6 +2144,12 @@ GPU/主题当前状态以第二十五节为准，第二十四节保留为原因�
 实现只读验证，新增"官方镜像出厂即 r51p0 用户态 / r54p2 内核态不配平"铁证；
 libmali 可用性结论仍以第二十六节为准，本节为其补充上游镜像侧直接证据。
 第二十八节为 2026-11-21 10:20 F1 路线 A 执行（ARM 官方 r51p0 kernel DDK +
-6.18 兼容补丁），已真实编译产出 r51p0 kbase 实现 DDK 配平；libmali 修复
-进展以本节为准，但板级有效性仍待实机验证，不得声称故障已消除。
+6.18 兼容补丁），已真实编译产出 r51p0 kbase 实现 DDK 配平。
+第二十九节为 2026-11-21 20:15 远程构建 mali-bifrost 失败诊断与补丁勘误，
+修正第二十八节补丁的 fence_ops 语法错误与 6.18 EXTRA_CFLAGS 失效两处缺陷，
+已重新干净编译 BUILD_OK 并产出 r51p0 kbase；libmali 修复进展与补丁状态以
+本节为准（为全文最新）。但要强调：第二十八/二十九节的编译配平证据不等于
+板级通过，0x51 归零与 ES 进主界面仍须实机验证，不得声称故障已消除；
+第二十六节"DDK 无法配平/不具备 libmali 条件"是引入官方 r51p0 内核 DDK
+之前的结论，已被第二十八、二十九节的落地+编译证据更新。
 ================================================================================

@@ -1,0 +1,108 @@
+================================================================================
+A311D 远程构建 mali-bifrost 失败诊断与修复（F1 路线 A 补丁勘误）
+2026-11-21 19:22~20:15 CST
+性质：源码补丁修正 + 真实 aarch64 交叉编译验证；未刷盘、未上电、未构建完整镜像。
+================================================================================
+
+一、现象
+--------------------------------------------------------------------------------
+远程 CI 构建在 `BUILD mali-bifrost (target)` 后 exit code 2 终止。用户仅提供
+尾部日志，无 mali-bifrost 内部报错行。本轮工作在该包内自主复现并定位根因。
+
+二、复现方法（与 ROCKNIX 真实构建流程一致）
+--------------------------------------------------------------------------------
+容器 mali-verify:trixie（aarch64 gcc14）+ Linux 6.18.49 完整内核树。
+复刻真实构建三要素：
+  1) r51p0 官方 DDK tar（BX304L01B-SW-99002-r51p0-00eac0.tar）经
+     --strip-components=1 解包（与 scripts/extract 一致）。
+  2) 顶层 Makefile 取自包内 sources/Makefile（真实构建 cp 进 ${PKG_BUILD}）。
+  3) 应用仓库补丁 patches/6.18/001-linux-6.18-compat.patch。
+编译命令对齐 package.mk:65 的 kernel_make：
+  make KDIR=<6.18.49> ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+    CONFIG_MALI_MIDGARD=m CONFIG_MALI_PLATFORM_NAME=meson \
+    CONFIG_MALI_REAL_HW=y CONFIG_MALI_DEVFREQ=y CONFIG_MALI_GATOR_SUPPORT=y
+
+三、根因（两个独立缺陷，均在本轮补丁内）
+--------------------------------------------------------------------------------
+3.1 缺陷一：fence_ops.c 结构体提前闭合（语法错误）
+    原补丁把
+      .enable_signaling = kbase_fence_enable_signaling,
+      .fence_value_str  = kbase_fence_fence_value_str,
+      .release = kbase_fence_release };
+    改为
+      .enable_signaling = kbase_fence_enable_signaling };
+      .release = kbase_fence_release };            <-- 孤立语句，非法 C
+    第二处（非 CSF 分支）同样提前闭合。DDK Makefile 带 -Werror，直接编译失败。
+    该坏代码由 apply_618.sh 的 sed `s/.enable_signaling = ...,/... };/` 引入：
+    它在删掉 .fence_value_str 行后给 enable_signaling 行尾强行加了 `};`，
+    却未处理其后的 .release 行。
+
+3.2 缺陷二：EXTRA_CFLAGS 在 Linux 6.18 已失效（更深层，决定性）
+    6.18 内核 Makefile / scripts/Makefile.build 中已无 EXTRA_CFLAGS 的任何处理
+    （grep 零匹配）。而 r51p0 DDK 的 midgard/Makefile:299 把全部
+    -DCONFIG_MALI_* 配置宏通过 EXTRA_CFLAGS 传给内核 Kbuild：
+      EXTRA_CFLAGS := $(foreach config,$(CONFIGS), -D$(config)=1 ...)
+      $(MAKE) -C $(KDIR) M=$(M) EXTRA_CFLAGS="$(EXTRA_CFLAGS)" ... modules
+    6.18 忽略该变量 → 所有 CONFIG_MALI_* 宏未定义：
+      - mali_kbase_defs.h:1204 的 `#ifdef CONFIG_MALI_DEVFREQ` 字段段整体消失；
+      - mali_kbase_devfreq.c 报 30+ 处 `struct kbase_device has no member named
+        num_opps / devfreq_table / current_nominal_freq / devfreq ...`；
+      - 另有 kbase_devfreq_set_core_mask、kbase_pm_get_dvfs_metrics 隐式声明。
+    这是补丁一（fence_ops）修好后仍 BUILD_FAIL 的真正原因。
+
+3.3 排除项
+    - 不是切换逻辑 / gpudriver / DTS / 引导链问题（本次仅 mali-bifrost 编译期失败）。
+    - 不是补丁无法应用：patch -p1 --dry-run 全程通过。
+    - 不是内核 API 方向错：6.18.49 确实删除 fence_value_str、remove 改 void、
+      提供 hrtimer_setup / SetPageMovableOps，补丁修改方向正确。
+    - 未采用命令行 ccflags-y 传参：DDK Kbuild:111 用 `ccflags-y =` 赋值，
+      命令行变量会覆盖 Makefile 内的 `+=`，导致 -I$(src) 等 include 路径丢失
+      （实测报 mali_kbase_cache_policy.h: No such file）。该方案已排除。
+
+四、修复
+--------------------------------------------------------------------------------
+重写 patches/6.18/001-linux-6.18-compat.patch（7 文件 / 17 hunk，均由 pristine
+树实测修改后 diff 自动生成，hunk 行号精确，非手工编辑）：
+  4.1 midgard/Makefile（新增）：all 目标在 EXTRA_CFLAGS 之外追加
+      KCFLAGS="$(EXTRA_CFLAGS)"。KCFLAGS 是 6.18 官方支持的通道
+      （内核 Makefile:1137 `KBUILD_CFLAGS += $(KCFLAGS)`），追加而不覆盖
+      Kbuild 自身的 ccflags-y 与 include 路径。保留 EXTRA_CFLAGS 以兼容旧内核。
+  4.2 mali_kbase_fence_ops.c（修正）：删除 kbase_fence_fence_value_str 静态函数
+      定义（消除 -Werror=unused-function），两处 .fence_value_str 赋值删除，
+      CSF 分支保留 .release、非 CSF 分支以 .enable_signaling }; 正确闭合。
+  4.3 其余 5 文件（Kbuild src 锚点、platform_device.remove→void、删
+      FMODE_UNSIGNED_OFFSET、Movable API 更名、fence_value_str 删除、dma_set
+      _max_seg_size 去 err=、version_compat_defs.h 兼容宏）保持不变。
+
+五、验证证据
+--------------------------------------------------------------------------------
+5.1 复现（旧补丁）：repo_build3 / fix_build 均 BUILD_FAIL，devfreq 字段错误
+    30+ 处，0 个 .o 之外的有效产出。
+5.2 ccflags-y 方案：devfreq 字段错误归零，但 include 路径丢失（cache_policy.h
+    not found）——已排除该方案。
+5.3 KCFLAGS 方案（排除环境噪声后）：fix_build（无 KBUILD_MODPOST_WARN）C 编译
+    0 error，仅 modpost 因验证树无 Module.symvers 失败。
+5.4 【最终验证】干净解包 + 仓库现补丁 + KBUILD_MODPOST_WARN=1：
+    BUILD_OK，error 计数 0，114 个对象全部编译并链接；
+    产出 mali_kbase.ko 7,204,512 字节；
+    ko 内实测 `version=r51p0-00eac0 (UK version 11.48)`、`K:r51p0-00eac0(GPL)`，
+    与用户态 libmali 的 Bifrost-r51p0-00eac0 完全配平。
+    modpost unresolved warning（hrtimer_setup 等）系 modules_prepare 缺完整符号表
+    的验证环境限制，真实构建链接内核 Module.symvers 不会出现。
+5.5 patch -p1 --dry-run 6 文件全通过。
+
+六、影响与未执行
+--------------------------------------------------------------------------------
+- 仅修正 6.18 兼容补丁；mali-bifrost/package.mk、gpudriver 切换脚本、A311D
+  DTS、引导链、config.ini 均未再改。
+- 该补丁只挂 S922X|A311D 的 6.18 case；RK3326/RK3326S/RK356X 等仍用各自
+  6.12-LTS / r52p0 路径，不受 KCFLAGS 改动影响。
+- 未构建完整镜像、未刷盘、未上电。配平后 0x51 归零与 ES 进主界面仍须走
+  handoff 第二十六节 V1 的实机流程；不得据本报告声称故障已消除。
+
+七、结论
+--------------------------------------------------------------------------------
+远程构建 exit 2 由本轮 F1 补丁自身的两处缺陷造成，与 DDK 选型方向无关：
+fence_ops.c 语法闭合错误，以及 6.18 废弃 EXTRA_CFLAGS 导致配置宏失效。
+均已修正并经干净编译实证产出 r51p0 kbase。用户可重新发起构建。
+================================================================================

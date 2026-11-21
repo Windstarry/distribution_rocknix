@@ -1,5 +1,5 @@
---- a/product/kernel/drivers/gpu/arm/midgard/Kbuild
-+++ b/product/kernel/drivers/gpu/arm/midgard/Kbuild
+--- a/product/kernel/drivers/gpu/arm/midgard/Kbuild	2024-08-14 00:26:26.000000000 +0000
++++ b/product/kernel/drivers/gpu/arm/midgard/Kbuild	2026-11-21 12:18:07.010119600 +0000
 @@ -20,7 +20,7 @@
  
  # make $(src) as absolute path if it is not already, by prefixing $(srctree)
@@ -9,8 +9,30 @@
  
  #
  # Prevent misuse when Kernel configurations are not present by default
---- a/product/kernel/drivers/gpu/arm/midgard/mali_kbase_core_linux.c
-+++ b/product/kernel/drivers/gpu/arm/midgard/mali_kbase_core_linux.c
+--- a/product/kernel/drivers/gpu/arm/midgard/Makefile	2024-08-14 00:26:26.000000000 +0000
++++ b/product/kernel/drivers/gpu/arm/midgard/Makefile	2026-11-21 12:18:07.029124300 +0000
+@@ -296,7 +296,7 @@
+ endif
+ 
+ all:
+-	$(MAKE) -C $(KDIR) M=$(M) $(MAKE_ARGS) EXTRA_CFLAGS="$(EXTRA_CFLAGS)" KBUILD_EXTRA_SYMBOLS="$(EXTRA_SYMBOLS)" modules
++	$(MAKE) -C $(KDIR) M=$(M) $(MAKE_ARGS) EXTRA_CFLAGS="$(EXTRA_CFLAGS)" KCFLAGS="$(EXTRA_CFLAGS)" KBUILD_EXTRA_SYMBOLS="$(EXTRA_SYMBOLS)" modules
+ 
+ modules_install:
+ 	$(MAKE) -C $(KDIR) M=$(M) $(MAKE_ARGS) modules_install
+--- a/product/kernel/drivers/gpu/arm/midgard/device/mali_kbase_device.c	2024-08-14 00:26:26.000000000 +0000
++++ b/product/kernel/drivers/gpu/arm/midgard/device/mali_kbase_device.c	2026-11-21 12:18:07.302679700 +0000
+@@ -308,7 +308,7 @@
+ 
+ 	/* There is no limit for Mali, so set to max. */
+ 	if (kbdev->dev->dma_parms)
+-		err = dma_set_max_seg_size(kbdev->dev, UINT_MAX);
++		dma_set_max_seg_size(kbdev->dev, UINT_MAX);
+ 	if (err)
+ 		goto dma_set_mask_failed;
+ 
+--- a/product/kernel/drivers/gpu/arm/midgard/mali_kbase_core_linux.c	2024-08-14 00:26:26.000000000 +0000
++++ b/product/kernel/drivers/gpu/arm/midgard/mali_kbase_core_linux.c	2026-11-21 12:18:07.151762900 +0000
 @@ -726,7 +726,6 @@
  	}
  
@@ -39,8 +61,46 @@
  }
  
  void kbase_backend_devfreq_term(struct kbase_device *kbdev)
---- a/product/kernel/drivers/gpu/arm/midgard/mali_kbase_mem_migrate.c
-+++ b/product/kernel/drivers/gpu/arm/midgard/mali_kbase_mem_migrate.c
+--- a/product/kernel/drivers/gpu/arm/midgard/mali_kbase_fence_ops.c	2024-08-14 00:26:26.000000000 +0000
++++ b/product/kernel/drivers/gpu/arm/midgard/mali_kbase_fence_ops.c	2026-11-21 12:18:07.261758200 +0000
+@@ -54,18 +54,6 @@
+ 	return true;
+ }
+ 
+-static void kbase_fence_fence_value_str(struct dma_fence *fence, char *str, int size)
+-{
+-	char *format;
+-
+-	if (KERNEL_VERSION(5, 1, 0) > LINUX_VERSION_CODE)
+-		format = "%u";
+-	else
+-		format = "%llu";
+-
+-	if (unlikely(!scnprintf(str, (size_t)size, format, fence->seqno)))
+-		pr_err("Fail to encode fence seqno to string");
+-}
+ 
+ #if MALI_USE_CSF
+ static void kbase_fence_release(struct dma_fence *fence)
+@@ -81,15 +69,13 @@
+ 					       .get_driver_name = kbase_fence_get_driver_name,
+ 					       .get_timeline_name = kbase_fence_get_timeline_name,
+ 					       .enable_signaling = kbase_fence_enable_signaling,
+-					       .fence_value_str = kbase_fence_fence_value_str,
+ 					       .release = kbase_fence_release };
+ #else
+ extern const struct dma_fence_ops kbase_fence_ops; /* silence checker warning */
+ const struct dma_fence_ops kbase_fence_ops = { .wait = dma_fence_default_wait,
+ 					       .get_driver_name = kbase_fence_get_driver_name,
+ 					       .get_timeline_name = kbase_fence_get_timeline_name,
+-					       .enable_signaling = kbase_fence_enable_signaling,
+-					       .fence_value_str = kbase_fence_fence_value_str };
++					       .enable_signaling = kbase_fence_enable_signaling };
+ #endif /* MALI_USE_CSF */
+ 
+ KBASE_EXPORT_TEST_API(kbase_fence_ops);
+--- a/product/kernel/drivers/gpu/arm/midgard/mali_kbase_mem_migrate.c	2024-08-14 00:26:26.000000000 +0000
++++ b/product/kernel/drivers/gpu/arm/midgard/mali_kbase_mem_migrate.c	2026-11-21 12:18:07.189769900 +0000
 @@ -88,7 +88,7 @@
  
  	lock_page(p);
@@ -137,40 +197,8 @@
  		page_md->status = PAGE_MOVABLE_CLEAR(page_md->status);
  		if (!WARN_ON_ONCE(!kbdev)) {
  			struct kbase_mem_migrate *mem_migrate = &kbdev->mem_migrate;
---- a/product/kernel/drivers/gpu/arm/midgard/mali_kbase_fence_ops.c
-+++ b/product/kernel/drivers/gpu/arm/midgard/mali_kbase_fence_ops.c
-@@ -80,16 +80,14 @@
- const struct dma_fence_ops kbase_fence_ops = { .wait = dma_fence_default_wait,
- 					       .get_driver_name = kbase_fence_get_driver_name,
- 					       .get_timeline_name = kbase_fence_get_timeline_name,
--					       .enable_signaling = kbase_fence_enable_signaling,
--					       .fence_value_str = kbase_fence_fence_value_str,
-+					       .enable_signaling = kbase_fence_enable_signaling };
- 					       .release = kbase_fence_release };
- #else
- extern const struct dma_fence_ops kbase_fence_ops; /* silence checker warning */
- const struct dma_fence_ops kbase_fence_ops = { .wait = dma_fence_default_wait,
- 					       .get_driver_name = kbase_fence_get_driver_name,
- 					       .get_timeline_name = kbase_fence_get_timeline_name,
--					       .enable_signaling = kbase_fence_enable_signaling,
--					       .fence_value_str = kbase_fence_fence_value_str };
-+					       .enable_signaling = kbase_fence_enable_signaling };
- #endif /* MALI_USE_CSF */
- 
- KBASE_EXPORT_TEST_API(kbase_fence_ops);
---- a/product/kernel/drivers/gpu/arm/midgard/device/mali_kbase_device.c
-+++ b/product/kernel/drivers/gpu/arm/midgard/device/mali_kbase_device.c
-@@ -308,7 +308,7 @@
- 
- 	/* There is no limit for Mali, so set to max. */
- 	if (kbdev->dev->dma_parms)
--		err = dma_set_max_seg_size(kbdev->dev, UINT_MAX);
-+		dma_set_max_seg_size(kbdev->dev, UINT_MAX);
- 	if (err)
- 		goto dma_set_mask_failed;
- 
---- a/product/kernel/include/linux/version_compat_defs.h
-+++ b/product/kernel/include/linux/version_compat_defs.h
+--- a/product/kernel/include/linux/version_compat_defs.h	2024-08-14 00:26:26.000000000 +0000
++++ b/product/kernel/include/linux/version_compat_defs.h	2026-11-21 12:18:07.322680600 +0000
 @@ -670,4 +670,23 @@
  #include <linux/kernel.h>
  #endif
